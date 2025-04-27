@@ -1,116 +1,84 @@
+
 import streamlit as st
 import google.generativeai as genai
 import os
 from PIL import Image
 import io
+import json # For potentially printing the payload for debugging
 
 # --- Configuration ---
 PAGE_TITLE = "Conversational Deeplink Helper"
-LOGO_PATH = "logo.png"
+LOGO_PATH = "logo.png" # Make sure logo.png is in the same folder
 
 
+# --- INSTRUCTIONS (Ensure this is accurate and detailed) ---
+# Using Markdown for clarity within the prompt. Ensure all file contents are correctly pasted.
 INSTRUCTIONS = """
+**SYSTEM PROMPT: You are the Gesund Deeplink Helper.**
 
-🎯 1. Mission (one sentence)
+🎯 **1. Mission:**
 Help the marketing & CRM team create fully-tested deep-link assets—Adjust links, QR codes, and push-notification payloads—without needing a developer.
 
-👥 2. Target users
-• Non-technical marketers  
-• Assume zero coding knowledge  
-• Use German or plain English, whichever the user starts with
+👥 **2. Target Users:**
+*   Non-technical marketers
+*   Assume zero coding knowledge
+*   Use German or plain English, whichever the user starts with
 
-🛠️ 3. What you can deliver (one of these, don't offer push notification-related stuff if user asks for link only)
-Use-case                    │ Return to the user
-────────────────────────────┼──────────────────────────────────────────────────────────────────────────
-Adjust custom link setup     │ • Deep-link path (gesund://…)  
-                             │ • Recommended channel / campaign / adgroup / creative values  (ask if user wants before providing)
-                             │ • Mini checklist to finish the flow in Adjust UI  
+🛠️ **3. Deliverables:**
+*   **Adjust custom link:** Provide `gesund://…` path, recommended Adjust parameters (ask first), and Adjust UI checklist.
+*   **QR code:** Provide Adjust short URL. Provide Base-64 PNG/SVG **only** if asked.
+*   **Push notification:** Provide `href` (`gesund://…`), `navigation` array, and blank template for title/body/linkLabel.
 
+📂 **4. Reference Files Provided Below:**
+*   `linkingConfig.ts`: Master list of valid paths. **USE THIS TO FIND PATHS.**
+*   `redirectRules.ts`: Legacy mapping (check here first if needed).
+*   `linkingPrefixes.ts`: For path normalization (internal use).
+*   `deeplink_targets.txt`: Screen descriptions for confirmation.
+*   `README.md`: Navigation details (internal understanding).
+*   `actionRoutes.ts`: Link-triggered actions (internal understanding).
 
-QR code for print / OOH      │ • Ready-to-copy Adjust short URL  
-                             │ • Base-64 PNG or SVG payload (**only** if user asks) 
+🔑 **5. Deep-link Basics:**
+*   **Scheme:** `gesund://`
+*   **Adjust Prefixes:** `nnm2` (prod), `8nhh` (beta), `eysl` (alpha), `snu8` (dev). Short URLs start `https://<prefix>.adj.st/`.
+*   **Build Rules:**
+    1.  Check `redirectRules.ts` if needed, then **verify path existence in `linkingConfig.ts`**.
+    2.  Fill required params (e.g., `:id`). Ask user if missing.
+    3.  Never invent screens or params.
+    4.  Encode query string values with `encodeURIComponent` (conceptually, you just format correctly).
 
+⚙️ **6. Step-by-step Wizards (Guide User):**
+*   **Adjust Link:** Campaign Lab → Custom Links → New link → App: gesund.de → Fill Channel/Campaign → User destinations → In-app screen → Paste path → Review/Create.
+*   **Firebase Push:** Messaging → New campaign → Fill Title/Body → Add key/value: `href` (path), `navigation` (array), `linkLabel` (optional) → Send test.
 
-Push notification deep link  │ • `href` (gesund://…)  
-                             │ • `navigation` array that matches React-Navigation  
-                             │ • Blank template for title, body, linkLabel (user fills)
+🧪 **7. Testing Checklist:**
+*   Latest app: Paste link in WhatsApp.
+*   Older version: Paste in Notes/Email.
+*   Not installed: Tap link → store → open → verify.
+*   QR: Min 2cm², error-correction M.
+*   Adjust Reset: Dashboard → Test Devices → remove device → relaunch.
 
-📂 4. Reference files
-File                    │ Purpose
-────────────────────────┼───────────────────────────────────────────────────────────────────────────────
-linkingConfig.ts        │ Master list of valid in-app paths
-redirectRules.ts             │ Legacy → new-path mapping (check **here first**)
-linkingPrefixes.ts      │ Removes branded prefixes → canonical path
-deeplink_targets.txt     │ Screen-to-"reference text" map (for confirmation questions)
-README.md               │ How navigation works under the hood (you can use for your own understanding, to use for more complex cases, like fallback url, extra params, link-triggered actions, etc)
-actionRoutes.ts    | Actions triggered by deeplinking
+🛡 **8. Safeguards:**
+*   Ask for missing mandatory params.
+*   Confirm target screen using `deeplink_targets.txt` reference text.
+*   Warn if path not found in `linkingConfig.ts`.
+*   Mention Dynamic Links deprecation (Aug 25, 2025).
+*   Never auto-generate full Adjust links (needs tokens). Guide user.
+*   Use non-technical language.
+*   If stalled, suggest email to Patrick (patrick.dauelsberg@gesund.de) and draft it.
 
+📣 **9. Conversation Flow:**
+1.  Clarify objective.
+2.  Ask for required IDs/params.
+3.  Confirm screen via reference text.
+4.  Generate path / navigation / checklist.
+5.  Walk user through UI steps one by one.
+6.  End with testing/placement checklist.
 
+--- REFERENCE FILE CONTENT START ---
 
-🔑 5. Deep-link basics
-Scheme        │ Example
-──────────────┼─────────────────────────────────────────────────────────────────────
-App scheme    │ `gesund://pharmacy/_/4484444/`
-Adjust short  │ `https://nnm2.adj.st/7h8c9w`  (prod)  
-Prefixes      │ prod nnm2 • beta 8nhh • alpha eysl • dev snu8
-
-Build rules  
-1. Resolve the requested screen via **redirect.ts**, then verify existence in `linkingConfig.ts`.  
-2. Fill all required params (`:idf`, etc.). If missing, ask the user.  
-3. Never invent screens or params.  
-4. Encode every query string with `encodeURIComponent`.  
-
-⚙️ 6. Step-by-step wizards (for the user)
-
-➊ Adjust link (2025 UI)  
-1) Campaign Lab → Custom Links → "＋ New link"  
-2) Choose app **gesund.de** (iOS & Android bundle)  
-3) Fill *Channel* (required) plus *Campaign/Adgroup/Creative* (optional)  
-4) "User destinations" → radio **In-app screen** → paste path from GPT  
-5) Review → Create → copy short URL and/or QR
-
-➋ Firebase push notification  
-1) Firebase Console → Messaging → New campaign  
-2) Fill Title, Body (user writes the text)  
-3) Add key/value pairs:  
-   • `href` = deep link (from GPT)  
-   • `navigation` = array (from GPT)  
-   • `linkLabel` (optional)  
-4) Send test to own device (Settings → Version ×10 → Developer → Push notifications)  
-5) Test foreground, background, closed app
-
-🧪 7. Testing checklist
-Scenario                        │ How to test
-────────────────────────────────┼───────────────────────────────────────────────────────────────
-Installed latest app            │ Paste link in WhatsApp
-Older app version               │ Paste in Notes/e-mail
-App not installed (deferred)    │ Tap link → store → open → verify params
-QR on print                     │ Minimum 2 cm², error-correction M
-
-To reset a device in Adjust (simulate first install):  
-Adjust Dashboard → Test Devices → remove the device → relaunch the app.  
-(Details: see Adjust docs, "Resetting Test Devices.")
-
-🛡 8. Safeguards
-• **Ask** for any missing mandatory param.  
-• **Confirm** the target screen by quoting its "reference text" from `deeplink_targets.ts`.  
-• Warn if route not found in `linkingConfig.ts`.  
-• Mention Dynamic Links deprecation (Aug 25 2025) if user suggests them.  
-• Never auto-generate Adjust links (tokens required). Guide the user instead.  
-• Keep language non-technical; replace jargon with plain words.  
-• If conversation stalls, propose an e-mail to Patrick (patrick.dauelsberg@gesund.de) and draft it.
-
-📣 9. Conversation flow (cheat-sheet for GPT)
-1. Clarify the objective: "Which screen or asset do you need?"  
-2. Ask for required IDs / params.  
-3. Confirm screen via reference text.  
-4. Generate path → navigation → UI checklist.  
-5. Walk the user through Adjust or Firebase screens *one step at a time*.  
-6. End with a "Done?" checklist covering tests & asset placement.
-
-
---- DEEPLINK DOCUMENTATION START ---
-linkingConfig
+### linkingConfig.ts Content ###
+```typescript
+// PASTE FULL linkingConfig.ts CONTENT HERE
 import { LinkingOptions } from "@react-navigation/native"
 import RootStackParams from "navigation/RootStackParams"
 
@@ -259,8 +227,8 @@ export const linkingConfig: LinkingOptions<RootStackParams>["config"] = {
           screens: {
             PharmacyHome: "home/:egk?",
             ProductDetails: "product/:id",
-            ProductList: "products/:category?",
-            CategoryDetails: "category/:id",
+            ProductList: "products/:category?", // <-- Potential match for category page
+            CategoryDetails: "category/:id",    // <-- Potential match for category page
             Campaign: "campaign/:id?",
             Basket: {
               path: "basket",
@@ -400,9 +368,11 @@ export const linkingConfig: LinkingOptions<RootStackParams>["config"] = {
     },
   },
 }
+```
 
-
-linkingPrefixes:
+### linkingPrefixes.ts Content ###
+```typescript
+// PASTE FULL linkingPrefixes.ts CONTENT HERE
 import Config from "react-native-config"
 
 export const prefixes: string[] = [
@@ -438,8 +408,11 @@ export function prunePrefixes(path: string) {
   console.log(`[linkingPrefixes.ts] Final pruned path: '${pruned}'`)
   return pruned
 }
+```
 
-deeplink_targets.txt:
+### deeplink_targets.txt Content ###
+```
+// PASTE FULL deeplink_targets.txt CONTENT HERE
 | Deeplink                                                              | Target Description                                        |
 |-----------------------------------------------------------------------|-----------------------------------------------------------|
 | pharmacy/search                                                       | Pharmacy Search Home                                      |
@@ -534,11 +507,12 @@ deeplink_targets.txt:
 | modal/pharmacy-request/123                                            | Request Pharmacy Modal                                    |
 | home/product/123                                                      | Product Details                                           |
 | home/products/category                                                | Product List                                              |
-| info/onboarding/confirm/token123/user@example.com                     | DOI Confirmation                                          | 
+| info/onboarding/confirm/token123/user@example.com                     | DOI Confirmation                                          |
+```
 
-
-
-actionRoutes.ts
+### actionRoutes.ts Content ###
+```typescript
+// PASTE FULL actionRoutes.ts CONTENT HERE
 import { Alert, DeviceEventEmitter } from "react-native"
 import SplashScreen from "react-native-bootsplash"
 
@@ -829,8 +803,11 @@ function shoutMedicineActionImpl(params: URLSearchParams) {
   )
   // Returns void implicitly
 }
+```
 
-redirectRules:
+### redirectRules.ts Content ###
+```typescript
+// PASTE FULL redirectRules.ts CONTENT HERE
 import { isUUID } from "api/isUUID"
 
 /**
@@ -1095,27 +1072,33 @@ function createPrefixRedirect(oldPrefix: string, newPrefix: string): RedirectVal
   }
 }
 
+```
 
---- DEEPLINK DOCUMENTATION END ---
+--- REFERENCE FILE CONTENT END ---
+
+Okay, I have read and understood the instructions and the provided file contents. I am ready to help create deep-links, Adjust links, QR codes, and push notification payloads based on this information. How can I assist you?
 """
-# --- END OF DEEPLINK INSTRUCTIONS ---
+# --- END OF INSTRUCTIONS ---
 
 # --- Helper Function to Configure Gemini ---
 def configure_gemini():
     try:
+        # Make sure GEMINI_API_KEY is set in Streamlit secrets
         api_key = st.secrets["GEMINI_API_KEY"]
         genai.configure(api_key=api_key)
-        # Ensure model supports chat and multimodal if needed
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        # For more robust chat, consider using model.start_chat()
         return model
+    except KeyError:
+        st.error("Error: GEMINI_API_KEY not found in Streamlit secrets.")
+        st.info("Please add your Gemini API Key to the Streamlit secrets configuration.")
+        st.stop()
     except Exception as e:
-        st.error(f"Error configuring Gemini API: {e}. Ensure 'GEMINI_API_KEY' is set in Streamlit secrets.")
+        st.error(f"Error configuring Gemini API: {e}")
         st.stop()
 
 # --- Initialize Session State ---
 if "messages" not in st.session_state:
-    # Add initial instruction context implicitly for the model
+    # We won't store the instructions in messages state, it's passed separately
     st.session_state.messages = []
 if "current_image" not in st.session_state:
     st.session_state.current_image = None
@@ -1125,7 +1108,7 @@ if "image_processed_this_turn" not in st.session_state:
 # --- Streamlit App Layout ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=LOGO_PATH)
 
-# Sidebar for Logo and Image Upload
+# Sidebar
 with st.sidebar:
     if os.path.exists(LOGO_PATH):
         st.image(LOGO_PATH, width=100)
@@ -1141,11 +1124,11 @@ with st.sidebar:
             pil_image = Image.open(io.BytesIO(image_bytes))
             st.session_state.current_image = pil_image
             st.image(pil_image, caption="Image ready for next message", use_column_width=True)
+            # Don't set image_processed flag here, only when sending
         except Exception as e:
             st.error(f"Error processing image: {e}")
             st.session_state.current_image = None
-    # Reset flag at the start of sidebar rendering if an image isn't actively uploaded this cycle
-    st.session_state.image_processed_this_turn = False
+    st.session_state.image_processed_this_turn = False # Reset at start of sidebar render
 
 
 # Main Chat Interface
@@ -1155,32 +1138,36 @@ st.caption("Chat about deeplinks or analyze uploaded images. Context is maintain
 # Configure Gemini Model
 model = configure_gemini()
 
-# Display chat messages from history
+# Display chat messages from history (now state only contains user/model turns)
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        # Display all parts of the message
         for part in message["parts"]:
             if isinstance(part, str):
                 st.markdown(part)
             elif isinstance(part, Image.Image):
-                st.image(part, width=200) # Display images stored in history
+                st.image(part, width=200)
             else:
-                st.markdown(str(part)) # Fallback for other types
+                 # Attempt to display other types as strings
+                 try:
+                     st.markdown(str(part))
+                 except Exception:
+                     st.write("Non-displayable content part")
+
 
 # React to user input using chat_input
 if prompt := st.chat_input("What deeplink or analysis do you need?"):
-    # Prepare user message parts (text + potentially the stored image)
-    user_message_parts = [prompt]
-    image_to_display = None # For displaying in the UI immediately
+    # Prepare user message parts for history and display
+    user_message_parts_for_state = [prompt] # Parts to store in session state
+    image_to_display = None
 
     if st.session_state.current_image:
-        user_message_parts.append(st.session_state.current_image)
+        # Add image to parts for state *and* mark for processing this turn
+        user_message_parts_for_state.append(st.session_state.current_image)
         image_to_display = st.session_state.current_image
-        st.session_state.image_processed_this_turn = True # Mark image as processed for this turn
-
+        st.session_state.image_processed_this_turn = True
 
     # Add user message to chat history (state)
-    st.session_state.messages.append({"role": "user", "parts": user_message_parts})
+    st.session_state.messages.append({"role": "user", "parts": user_message_parts_for_state})
 
     # Display user message in chat message container immediately
     with st.chat_message("user"):
@@ -1188,18 +1175,11 @@ if prompt := st.chat_input("What deeplink or analysis do you need?"):
         if image_to_display:
              st.image(image_to_display, width=200)
 
-    # --- Prepare content for API: Instructions + Full History ---
-    api_content_to_send = []
+    # --- Prepare content list for API ---
+    # Start with the main INSTRUCTIONS as the initial context
+    api_payload = [INSTRUCTIONS]
 
-    # 1. Add the base instructions as initial context (simulating system prompt)
-    #    Send it as if the 'model' is confirming its understanding first.
-    #    This helps set the context without being a 'user' turn.
-    #    Alternatively, prepend to the first *actual* user message if preferred.
-    # api_content_to_send.append({'role': 'user', 'parts': [INSTRUCTIONS]})
-    # api_content_to_send.append({'role': 'model', 'parts': ["Okay, I understand the rules and will follow them."]})
-
-    # 2. Process the actual chat history stored in session state
-    history_for_api = []
+    # Append the actual chat history from session state
     for i, msg in enumerate(st.session_state.messages):
         api_parts = []
         is_last_message = (i == len(st.session_state.messages) - 1)
@@ -1208,29 +1188,48 @@ if prompt := st.chat_input("What deeplink or analysis do you need?"):
             if isinstance(part, str):
                 api_parts.append(part)
             elif isinstance(part, Image.Image):
-                # Only include the *actual image data* for the very last user message
+                # Only include image data for the current turn's user message
                 if is_last_message and msg['role'] == 'user':
                     api_parts.append(part)
                 else:
-                    # Use a placeholder for images in past history to save tokens
-                    api_parts.append("(Image was present in this past message)")
+                    api_parts.append("(Image was present in this past message)") # Placeholder
             else:
-                 api_parts.append(str(part)) # Fallback
+                 # Try converting other potential types to string for the API
+                 try:
+                     api_parts.append(str(part))
+                 except Exception:
+                     api_parts.append("(Unsupported content part in history)")
 
-        history_for_api.append({'role': msg['role'], 'parts': api_parts})
+        # Append the structured message {role: ..., parts: ...} to the payload
+        # This structure might be required by some API versions or models
+        # Let's try sending the raw parts list after the instructions
+        # api_payload.append({'role': msg['role'], 'parts': api_parts})
+        # --- Let's try the simpler structure first: Just append the parts ---
+        api_payload.extend(api_parts) # Extend the main list directly with parts
 
-    # Construct the final list to send to the API
-    # Prepending instructions here ensures they are always considered
-    final_api_payload = [{'role': 'user', 'parts': [INSTRUCTIONS]}] + history_for_api
-    # Note: The above line sends instructions as a user message. If this causes issues,
-    # structure it differently, perhaps integrating instructions into the first real user message's parts.
+
+    # --- DEBUG: Print the payload structure before sending ---
+    # print("\n--- Sending Payload to Gemini ---")
+    # # Avoid printing full image data; represent images simply
+    # debug_payload = []
+    # for item in api_payload:
+    #     if isinstance(item, Image.Image):
+    #         debug_payload.append("<PIL.Image>")
+    #     else:
+    #         debug_payload.append(item)
+    # try:
+    #      print(json.dumps(debug_payload, indent=2)) # Pretty print if possible
+    # except TypeError:
+    #      print(debug_payload) # Fallback print
+    # print("--- End Payload ---\n")
+    # --- END DEBUG ---
 
 
     # --- Call Gemini API ---
     with st.spinner("Assistant is thinking..."):
         try:
-            # Send the full history (with placeholders for past images)
-            response = model.generate_content(final_api_payload)
+            # Send the combined instructions + history parts
+            response = model.generate_content(api_payload) # Pass the flat list of parts
 
             # Display assistant response
             with st.chat_message("model"):
@@ -1239,16 +1238,14 @@ if prompt := st.chat_input("What deeplink or analysis do you need?"):
             # Add assistant response to chat history (state)
             st.session_state.messages.append({"role": "model", "parts": [response.text]})
 
-            # --- Clear the image from state only AFTER it's been processed in an API call ---
+            # --- Clear the image from state only AFTER it's been processed ---
             if st.session_state.image_processed_this_turn:
                  st.session_state.current_image = None
                  st.session_state.image_processed_this_turn = False
-                 # Need to rerun to clear the image from the sidebar preview
-                 st.rerun()
-
+                 st.rerun() # Rerun to update sidebar
 
         except Exception as e:
             st.error(f"An error occurred calling Gemini: {e}")
-            # Optional: Remove the last user message if API call failed?
-            # if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-            #     st.session_state.messages.pop()
+            # Optional: Remove the last user message from state if API call failed
+            if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+                 st.session_state.messages.pop()
