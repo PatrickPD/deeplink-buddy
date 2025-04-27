@@ -1,4 +1,3 @@
-
 import streamlit as st
 import google.generativeai as genai
 import os
@@ -61,10 +60,11 @@ Help the marketing & CRM team create fully-tested deep-link assets—Adjust link
 *   Ask for missing mandatory params.
 *   Confirm target screen using `deeplink_targets.txt` reference text.
 *   Warn if path not found in `linkingConfig.ts`.
+*   If a required ID (e.g., product ID, pharmacy ID, category ID) is missing, ask the user to search for the target page on www.gesund.de and paste the full URL into the chat. You should be able to extract the ID from there.
 *   Mention Dynamic Links deprecation (Aug 25, 2025).
 *   Never auto-generate full Adjust links (needs tokens). Guide user.
 *   Use non-technical language.
-*   If stalled, suggest email to Patrick (patrick.dauelsberg@gesund.de) and draft it.
+*   If stalled or unable to fulfill the request, suggest contacting Patrick (patrick.dauelsberg@gesund.de) or Elisa via MS Teams and offer to draft the message for them.
 
 📣 **9. Conversation Flow:**
 1.  Clarify objective.
