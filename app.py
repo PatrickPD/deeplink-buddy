@@ -6,12 +6,8 @@ import io
 
 # --- Configuration ---
 PAGE_TITLE = "Conversational Deeplink Helper"
-LOGO_PATH = "logo.png" # Make sure logo.png is in the same folder
+LOGO_PATH = "logo.png"
 
-# --- IMPORTANT: PASTE YOUR UPDATED INSTRUCTIONS HERE ---
-# These instructions will be implicitly used by the model.
-# Make them very clear about the assistant's role, deeplink rules,
-# and how to handle images within the conversation.
 
 INSTRUCTIONS = """
 
@@ -111,19 +107,6 @@ Adjust Dashboard → Test Devices → remove the device → relaunch the app.
 4. Generate path → navigation → UI checklist.  
 5. Walk the user through Adjust or Firebase screens *one step at a time*.  
 6. End with a "Done?" checklist covering tests & asset placement.
-
-💬 10. Example prompt & response
-
-**User**: "I need a QR code that opens the Linda pharmacy (idf = 12345) in the app."  
-**GPT**:  
-1) "Got it! Just to confirm: can you upload a screenshot of this screen?"  
-2) After:  
-   • Deep-link path → `pharmacy/_/12345/`  
-   • Navigation → `["Details",{"screen":"PharmacyDetails","params":{"idf":"12345"}}]`  
-   • Adjust wizard steps 1-5 (prod prefix nnm2)  
-   • Reminder: download the QR, test on iOS & Android, reset test device if needed
-
-Feel free to use your knowledge to enhance the response.
 
 
 --- DEEPLINK DOCUMENTATION START ---
@@ -1117,14 +1100,14 @@ function createPrefixRedirect(oldPrefix: string, newPrefix: string): RedirectVal
 """
 # --- END OF DEEPLINK INSTRUCTIONS ---
 
-
 # --- Helper Function to Configure Gemini ---
 def configure_gemini():
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         genai.configure(api_key=api_key)
-        # Use a model that supports multimodal input and chat
-        model = genai.GenerativeModel('gemini-1.5-flash-latest') # Or gemini-1.5-pro
+        # Ensure model supports chat and multimodal if needed
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        # For more robust chat, consider using model.start_chat()
         return model
     except Exception as e:
         st.error(f"Error configuring Gemini API: {e}. Ensure 'GEMINI_API_KEY' is set in Streamlit secrets.")
@@ -1132,9 +1115,12 @@ def configure_gemini():
 
 # --- Initialize Session State ---
 if "messages" not in st.session_state:
-    st.session_state.messages = [] # Stores chat history: [{"role": "user/model", "parts": [text_or_image]}]
+    # Add initial instruction context implicitly for the model
+    st.session_state.messages = []
 if "current_image" not in st.session_state:
-    st.session_state.current_image = None # Stores the PIL image object for the *next* turn
+    st.session_state.current_image = None
+if "image_processed_this_turn" not in st.session_state:
+    st.session_state.image_processed_this_turn = False
 
 # --- Streamlit App Layout ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=LOGO_PATH)
@@ -1143,35 +1129,28 @@ st.set_page_config(page_title=PAGE_TITLE, page_icon=LOGO_PATH)
 with st.sidebar:
     if os.path.exists(LOGO_PATH):
         st.image(LOGO_PATH, width=100)
-    else:
-        st.warning(f"Logo not found at {LOGO_PATH}")
-
     st.header("Upload Image (Optional)")
     uploaded_file = st.file_uploader(
         "Upload an image to discuss in your next message.",
         type=["png", "jpg", "jpeg"],
-        key="file_uploader" # Key helps manage state
+        key="file_uploader"
     )
-
     if uploaded_file is not None:
-        # Process and store the image in session state for the next message
         try:
             image_bytes = uploaded_file.getvalue()
             pil_image = Image.open(io.BytesIO(image_bytes))
-            st.session_state.current_image = pil_image # Store the PIL image object
+            st.session_state.current_image = pil_image
             st.image(pil_image, caption="Image ready for next message", use_column_width=True)
-            st.info("Image uploaded. Ask about it in your next message.")
         except Exception as e:
             st.error(f"Error processing image: {e}")
             st.session_state.current_image = None
-    elif "clear_image" in st.session_state and st.session_state.clear_image:
-        # Logic to clear image if needed after processing (handled below)
-         st.session_state.current_image = None
-         st.session_state.clear_image = False # Reset flag
+    # Reset flag at the start of sidebar rendering if an image isn't actively uploaded this cycle
+    st.session_state.image_processed_this_turn = False
+
 
 # Main Chat Interface
 st.title(PAGE_TITLE)
-st.caption("Chat about deeplinks or analyze uploaded images.")
+st.caption("Chat about deeplinks or analyze uploaded images. Context is maintained.")
 
 # Configure Gemini Model
 model = configure_gemini()
@@ -1179,100 +1158,97 @@ model = configure_gemini()
 # Display chat messages from history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        # Display text part
-        text_parts = [part for part in message["parts"] if isinstance(part, str)]
-        if text_parts:
-            st.markdown(" ".join(text_parts))
-        # Display image part (if any) - simplified for this history view
-        image_parts = [part for part in message["parts"] if not isinstance(part, str)]
-        if image_parts:
-            # In history, maybe just indicate an image was sent or show a thumbnail if needed
-             st.markdown("*(Image was included in this message)*")
+        # Display all parts of the message
+        for part in message["parts"]:
+            if isinstance(part, str):
+                st.markdown(part)
+            elif isinstance(part, Image.Image):
+                st.image(part, width=200) # Display images stored in history
+            else:
+                st.markdown(str(part)) # Fallback for other types
 
-# React to user input
+# React to user input using chat_input
 if prompt := st.chat_input("What deeplink or analysis do you need?"):
     # Prepare user message parts (text + potentially the stored image)
     user_message_parts = [prompt]
-    image_to_send = None # Track if we are sending an image this turn
+    image_to_display = None # For displaying in the UI immediately
 
     if st.session_state.current_image:
-        image_to_send = st.session_state.current_image
-        user_message_parts.append(image_to_send)
-        # Mark that the image should be cleared from state *after* this turn
-        st.session_state.clear_image = True
+        user_message_parts.append(st.session_state.current_image)
+        image_to_display = st.session_state.current_image
+        st.session_state.image_processed_this_turn = True # Mark image as processed for this turn
 
 
-    # Add user message to chat history
+    # Add user message to chat history (state)
     st.session_state.messages.append({"role": "user", "parts": user_message_parts})
 
-    # Display user message in chat message container
+    # Display user message in chat message container immediately
     with st.chat_message("user"):
         st.markdown(prompt)
-        if image_to_send:
-             st.image(image_to_send, width=200) # Show the image sent with the prompt
+        if image_to_display:
+             st.image(image_to_display, width=200)
 
-    # Prepare the history + instructions for the API call
-    # The Gemini API works best if the history alternates user/model roles.
-    # We prepend the INSTRUCTIONS to the first user turn conceptually.
-    # For the API call itself, send the history. The model should infer context.
-    # Note: A more robust implementation might use model.start_chat(history=...)
-    # But managing history manually like this is also common.
+    # --- Prepare content for API: Instructions + Full History ---
+    api_content_to_send = []
 
-    api_history = []
-    # Add instructions implicitly via the first turn or context setting if API supports.
-    # For this manual history approach, the model infers from the flow.
-    # A simple way is to just ensure INSTRUCTIONS are part of the context somehow.
-    # Let's construct the prompt including history *and* base instructions.
-    full_prompt_content = [INSTRUCTIONS] # Start with base rules
-    full_prompt_content.append("\n\n--- Chat History ---")
-    for msg in st.session_state.messages:
-        role_prefix = "User: " if msg["role"] == "user" else "Assistant: "
-        text_parts = [part for part in msg["parts"] if isinstance(part, str)]
-        content = role_prefix + " ".join(text_parts)
-        # Note: Directly including images from *past* history might exceed token limits.
-        # We primarily send the *current* image if provided by the user for *this* turn.
-        # For this example, we'll just send text history + current image/text prompt.
-        api_history.append(content) # Build text history
+    # 1. Add the base instructions as initial context (simulating system prompt)
+    #    Send it as if the 'model' is confirming its understanding first.
+    #    This helps set the context without being a 'user' turn.
+    #    Alternatively, prepend to the first *actual* user message if preferred.
+    # api_content_to_send.append({'role': 'user', 'parts': [INSTRUCTIONS]})
+    # api_content_to_send.append({'role': 'model', 'parts': ["Okay, I understand the rules and will follow them."]})
 
-    # The actual content to send: Combine text history and the latest user parts
-    content_to_send = [INSTRUCTIONS] + st.session_state.messages[-1]["parts"] # Send latest user msg parts + instructions
+    # 2. Process the actual chat history stored in session state
+    history_for_api = []
+    for i, msg in enumerate(st.session_state.messages):
+        api_parts = []
+        is_last_message = (i == len(st.session_state.messages) - 1)
+
+        for part in msg['parts']:
+            if isinstance(part, str):
+                api_parts.append(part)
+            elif isinstance(part, Image.Image):
+                # Only include the *actual image data* for the very last user message
+                if is_last_message and msg['role'] == 'user':
+                    api_parts.append(part)
+                else:
+                    # Use a placeholder for images in past history to save tokens
+                    api_parts.append("(Image was present in this past message)")
+            else:
+                 api_parts.append(str(part)) # Fallback
+
+        history_for_api.append({'role': msg['role'], 'parts': api_parts})
+
+    # Construct the final list to send to the API
+    # Prepending instructions here ensures they are always considered
+    final_api_payload = [{'role': 'user', 'parts': [INSTRUCTIONS]}] + history_for_api
+    # Note: The above line sends instructions as a user message. If this causes issues,
+    # structure it differently, perhaps integrating instructions into the first real user message's parts.
 
 
-    # Generate response
+    # --- Call Gemini API ---
     with st.spinner("Assistant is thinking..."):
         try:
-            # Send the relevant history (or just the last message + image + instructions)
-            # Sending full history requires careful formatting for the model.
-            # Let's try sending the instructions + latest user message parts for simplicity here.
-            # For true multi-turn context, send formatted history or use model.start_chat()
-            response = model.generate_content(content_to_send) # Pass the latest user parts + instructions
+            # Send the full history (with placeholders for past images)
+            response = model.generate_content(final_api_payload)
 
             # Display assistant response
             with st.chat_message("model"):
                 st.markdown(response.text)
 
-            # Add assistant response to chat history
+            # Add assistant response to chat history (state)
             st.session_state.messages.append({"role": "model", "parts": [response.text]})
 
-            # --- IMPORTANT: Clear the image from state after processing this turn ---
-            if "clear_image" in st.session_state and st.session_state.clear_image:
+            # --- Clear the image from state only AFTER it's been processed in an API call ---
+            if st.session_state.image_processed_this_turn:
                  st.session_state.current_image = None
-                 st.session_state.clear_image = False
-                 # Trigger a rerun to update the sidebar display (optional but cleaner)
-                 # st.experimental_rerun() # Use st.rerun() in newer Streamlit versions
+                 st.session_state.image_processed_this_turn = False
+                 # Need to rerun to clear the image from the sidebar preview
+                 st.rerun()
 
 
         except Exception as e:
-            st.error(f"An error occurred: {e}")
-            # Optionally remove the last user message from history if API call failed
-            # st.session_state.messages.pop()
-
-
-# Clear the image if the flag is set but no prompt was entered (e.g., after upload)
-# This is a bit redundant with the check after processing but ensures cleanup
-if "clear_image" in st.session_state and st.session_state.clear_image and not prompt:
-     st.session_state.current_image = None
-     st.session_state.clear_image = False
-     
-     
-     
+            st.error(f"An error occurred calling Gemini: {e}")
+            # Optional: Remove the last user message if API call failed?
+            # if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+            #     st.session_state.messages.pop()
