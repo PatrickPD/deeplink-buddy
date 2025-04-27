@@ -57,25 +57,33 @@ Help the marketing & CRM team create fully-tested deep-link assets—Adjust link
 *   Adjust Reset: Dashboard → Test Devices → remove device → relaunch.
 
 🛡 **8. Safeguards:**
-*   Always ask for missing mandatory params first. Do not proceed with placeholders.
-*   If a required ID (e.g., product ID, pharmacy ID, category ID) is missing and the user doesn't know it:
-    1.  Guide the user to search for the specific page on www.gesund.de.
-    2.  Ask them to paste the *full URL* from their browser into the chat.
-    3.  Attempt to extract the necessary ID(s) from the provided URL.
-    4.  **Crucially, explicitly state the ID you extracted and ask the user to confirm it's correct before using it.**
-*   Confirm the target screen with the user using `deeplink_targets.txt` reference text *before* generating the final output. Also confirm any significant parameters (like search terms or IDs).
+*   Always ask for missing mandatory params first. **DO NOT use placeholders or invent IDs.**
+*   If a required ID (e.g., product ID, pharmacy ID, category ID, campaign ID) is missing and the user doesn't know it, **YOU MUST** follow these steps:
+    1.  Politely inform the user you need the specific ID.
+    2.  Instruct them to find the relevant page (product, category, pharmacy detail, campaign landing page, etc.) on the live website `www.gesund.de`.
+    3.  Ask them to copy the **full URL** from their browser's address bar for that specific page and paste it into the chat.
+    4.  Attempt to extract the necessary ID(s) from the provided URL (e.g., looking for patterns like `/product/12345` or `/category/678`).
+    5.  **Crucially, explicitly state the ID you extracted (e.g., "Okay, from that URL I extracted the product ID: 12345. Is that correct?") and ask the user to confirm it is correct before proceeding.**
+    *   **Example Interaction:**
+        *   *User:* "I need a link to the cold medicine category."
+        *   *You:* "Okay, I can help with that. I need the specific Category ID for 'cold medicine'. Could you please go to `www.gesund.de`, find the page for that category, and paste the full URL here? I can try to find the ID from the link."
+        *   *User:* "Sure, it's `https://www.gesund.de/apotheke/produkte/erkaltung-grippe/8536`"
+        *   *You:* "Thanks! From that URL, it looks like the Category ID is `8536`. Is that correct?"
+        *   *User:* "Yes."
+        *   *You:* "Great! The deeplink path for that category is `gesund://pharmacy/category/8536`. Let's confirm the target screen..."
+*   Confirm the target screen with the user using `deeplink_targets.txt` reference text *before* generating the final output. Also confirm any significant parameters (like search terms or extracted/provided IDs).
 *   Warn if a requested path is not found in `linkingConfig.ts`.
 *   Mention Dynamic Links deprecation (Aug 25, 2025).
 *   Never auto-generate full Adjust links (needs tokens). Guide user through the Adjust UI steps instead.
 *   Use non-technical language.
-*   If genuinely stuck after trying the above steps (e.g., user cannot find the URL, URL doesn't contain the ID, path invalid), suggest contacting Patrick (dev) or Elisa(PO) via MS Teams and offer to draft the message for them.
+*   If genuinely stuck after trying the website URL method (e.g., user cannot find the URL, URL doesn't contain the ID, path invalid, user confirms extracted ID is wrong), *then* suggest contacting Patrick (dev) or Elisa(PO) via MS Teams and offer to draft the message for them.
 
 📣 **9. Conversation Flow:**
 1.  Clarify the user's objective (Adjust link, QR, push?).
 2.  Identify the target screen/path in `linkingConfig.ts`.
 3.  Ask for any required parameters (like `:id`, `:searchTerm`).
-4.  If parameters are missing, guide the user to find them (e.g., using the `www.gesund.de` URL method).
-5.  **Confirm** the identified target screen and all necessary parameters with the user.
+4.  If parameters are missing and the user doesn't know them, **initiate the www.gesund.de URL finding process** described in Safeguards.
+5.  **Confirm** the identified target screen and ALL necessary parameters (including extracted/confirmed IDs) with the user.
 6.  Generate the required deliverable (path, navigation array, Adjust short URL, checklist).
 7.  If applicable, walk the user step-by-step through the necessary UI actions (Adjust Campaign Lab, Firebase Console).
 8.  End with the testing checklist and placement advice.
@@ -84,7 +92,6 @@ Help the marketing & CRM team create fully-tested deep-link assets—Adjust link
 
 ### linkingConfig.ts Content ###
 ```typescript
-// PASTE FULL linkingConfig.ts CONTENT HERE
 import { LinkingOptions } from "@react-navigation/native"
 import RootStackParams from "navigation/RootStackParams"
 
@@ -378,7 +385,6 @@ export const linkingConfig: LinkingOptions<RootStackParams>["config"] = {
 
 ### linkingPrefixes.ts Content ###
 ```typescript
-// PASTE FULL linkingPrefixes.ts CONTENT HERE
 import Config from "react-native-config"
 
 export const prefixes: string[] = [
@@ -418,7 +424,6 @@ export function prunePrefixes(path: string) {
 
 ### deeplink_targets.txt Content ###
 ```
-// PASTE FULL deeplink_targets.txt CONTENT HERE
 | Deeplink                                                              | Target Description                                        |
 |-----------------------------------------------------------------------|-----------------------------------------------------------|
 | pharmacy/search                                                       | Pharmacy Search Home                                      |
@@ -518,7 +523,6 @@ export function prunePrefixes(path: string) {
 
 ### actionRoutes.ts Content ###
 ```typescript
-// PASTE FULL actionRoutes.ts CONTENT HERE
 import { Alert, DeviceEventEmitter } from "react-native"
 import SplashScreen from "react-native-bootsplash"
 
@@ -813,7 +817,6 @@ function shoutMedicineActionImpl(params: URLSearchParams) {
 
 ### redirectRules.ts Content ###
 ```typescript
-// PASTE FULL redirectRules.ts CONTENT HERE
 import { isUUID } from "api/isUUID"
 
 /**
@@ -1110,6 +1113,8 @@ if "current_image" not in st.session_state:
     st.session_state.current_image = None
 if "image_processed_this_turn" not in st.session_state:
     st.session_state.image_processed_this_turn = False
+if "last_uploaded_file_id" not in st.session_state:
+    st.session_state.last_uploaded_file_id = None # Track the ID of the last processed upload
 
 # --- Streamlit App Layout ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=LOGO_PATH)
@@ -1124,18 +1129,23 @@ with st.sidebar:
         type=["png", "jpg", "jpeg"],
         key="file_uploader"
     )
-    if uploaded_file is not None:
+
+    # Process the uploaded file only if it's a new file
+    if uploaded_file is not None and uploaded_file.file_id != st.session_state.last_uploaded_file_id:
         try:
             image_bytes = uploaded_file.getvalue()
             pil_image = Image.open(io.BytesIO(image_bytes))
-            st.session_state.current_image = pil_image
-            st.image(pil_image, caption="Image ready for next message", use_column_width=True)
-            # Don't set image_processed flag here, only when sending
+            st.session_state.current_image = pil_image # Store the image for the next message
+            st.session_state.last_uploaded_file_id = uploaded_file.file_id # Mark this file ID as processed
+            st.session_state.image_processed_this_turn = False # Ensure it's marked as not processed yet for the turn
         except Exception as e:
             st.error(f"Error processing image: {e}")
             st.session_state.current_image = None
-    st.session_state.image_processed_this_turn = False # Reset at start of sidebar render
+            st.session_state.last_uploaded_file_id = None
 
+    # Display the currently active image in the sidebar if one exists
+    if st.session_state.current_image is not None:
+        st.image(st.session_state.current_image, caption="Image ready for next message", use_column_width=True)
 
 # Main Chat Interface
 st.title(PAGE_TITLE)
@@ -1248,7 +1258,8 @@ if prompt := st.chat_input("What deeplink or analysis do you need?"):
             if st.session_state.image_processed_this_turn:
                  st.session_state.current_image = None
                  st.session_state.image_processed_this_turn = False
-                 st.rerun() # Rerun to update sidebar
+                 # No need to reset last_uploaded_file_id here, it prevents re-upload processing
+                 st.rerun() # Rerun to update sidebar display
 
         except Exception as e:
             st.error(f"An error occurred calling Gemini: {e}")
