@@ -1,24 +1,14 @@
 import streamlit as st
 import google.generativeai as genai
 import os
+from PIL import Image # Import Pillow for image handling
+import io # To handle image bytes
 
 # --- Configuration ---
-PAGE_TITLE = "App Deeplink Helper"
+PAGE_TITLE = "App Deeplink & Image Helper"
 LOGO_PATH = "logo.png" # Make sure logo.png is in the same folder
 
-# --- IMPORTANT: PASTE YOUR DEEPLINK INSTRUCTIONS HERE ---
-# Replace the multi-line string below with your actual, detailed
-# documentation for generating deeplinks. Be specific about:
-# - Base URLs (production, staging)
-# - Available paths/routes
-# - Required parameters for each path
-# - Optional parameters for each path
-# - Data types and formatting for parameters
-# - Clear examples for common use cases!
-# The more detail you give Gemini, the better it will work.
-
 DEEPLINK_INSTRUCTIONS = """
-**YOU MUST PASTE YOUR DETAILED DEEPLINK DOCUMENTATION HERE!**
 
 
 🎯 1. Mission (one sentence)
@@ -1134,14 +1124,15 @@ else:
     st.warning(f"Warning: Logo file not found at {LOGO_PATH}")
 
 st.title(PAGE_TITLE)
-st.caption("Ask me to generate a deeplink based on our app's rules.")
+st.caption("Ask me to generate a deeplink or analyze an image based on our app's rules.")
 
 # --- Gemini API Interaction ---
 try:
     # SECURELY get API key from Streamlit Secrets
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash-latest') # Or 'gemini-1.5-pro-latest'
+    # Use a model that supports multimodal input (text and image)
+    model = genai.GenerativeModel('gemini-1.5-flash-latest') # Or gemini-1.5-pro
 except Exception as e:
     st.error(f"""
     Error configuring Gemini API. Make sure you have added your Gemini API Key
@@ -1149,31 +1140,66 @@ except Exception as e:
 
     Details: {e}
     """)
-    st.stop() # Stop execution if API key is not configured
+    st.stop()
 
 # --- User Input ---
-user_request = st.text_area("What deeplink do you need?", height=100,
-                            placeholder="e.g., 'Create a link to the product page for SKU ABC007 with campaign source facebook'")
 
-if st.button("Generate Deeplink"):
+# Image Uploader
+uploaded_file = st.file_uploader("Upload an image (optional)", type=["png", "jpg", "jpeg"])
+image_input = None
+if uploaded_file is not None:
+    # Read the file content into bytes
+    image_bytes = uploaded_file.getvalue()
+    # Open the image using Pillow
+    try:
+        image_input = Image.open(io.BytesIO(image_bytes))
+        st.image(image_input, caption="Uploaded Image", use_column_width=True)
+    except Exception as e:
+        st.error(f"Error processing image: {e}")
+        uploaded_file = None # Reset if image processing fails
+
+# Text Input
+user_request = st.text_area("What do you need?", height=100,
+                            placeholder=("e.g., 'Create a link to the product page for SKU ABC007' OR "
+                                         "'Generate a deeplink for the product in the image with campaign source facebook' OR "
+                                         "'Describe the uploaded image for social media.'"))
+
+if st.button("Generate Response"):
     if not user_request:
-        st.warning("Please enter your request.")
+        st.warning("Please enter your request in the text box.")
     elif not api_key:
          st.error("Gemini API Key not configured in secrets. Cannot proceed.")
     else:
-        # Construct the prompt
-        prompt = f"{DEEPLINK_INSTRUCTIONS}\n\n---\n\nUser Request: {user_request}\n\nGenerate the deeplink:"
+        # --- Construct the prompt (potentially multimodal) ---
+        prompt_parts = [INSTRUCTIONS] # Start with the base instructions
 
+        if image_input:
+            # If an image is uploaded, add it to the prompt parts
+            prompt_parts.append("\n\n--- IMAGE INPUT ---")
+            prompt_parts.append(image_input) # Add the PIL image object
+            prompt_parts.append("\n\n--- USER REQUEST (Consider Image) ---")
+            prompt_parts.append(user_request)
+            prompt_parts.append("\n\n--- RESPONSE ---")
+        else:
+            # If no image, construct a text-only prompt
+             prompt_parts.append("\n\n--- USER REQUEST ---")
+             prompt_parts.append(user_request)
+             prompt_parts.append("\n\n--- RESPONSE ---")
+
+        # --- Call Gemini API ---
         try:
-            with st.spinner("Generating deeplink with Gemini..."):
-                response = model.generate_content(prompt)
+            with st.spinner("Generating response with Gemini..."):
+                # Use generate_content which handles multimodal input list
+                response = model.generate_content(prompt_parts)
                 # Display the result
-                st.subheader("Generated Deeplink / Response:")
-                st.markdown(response.text) # Use markdown for better formatting if Gemini uses it
-                # st.code(response.text, language=None) # Alternative: display as plain code block
+                st.subheader("Generated Response:")
+                st.markdown(response.text)
 
         except Exception as e:
             st.error(f"An error occurred while calling the Gemini API: {e}")
+            # You might want more specific error handling here
+            # print(f"Error details: {e}") # For debugging in logs
 
 st.markdown("---")
-st.caption("Remember to double-check the generated deeplink before using it in campaigns.")
+st.caption("Remember to double-check generated deeplinks and analyze image interpretations.")
+
