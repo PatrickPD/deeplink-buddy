@@ -203,111 +203,121 @@ ALTERNATIVES:
 `;
         // --- End Refined System Prompt ---
         // Create a prompt that includes screenshots for the LLM to analyze
-        const response = await aiInstance.generate({
-            model: vertexai_1.gemini25ProPreview0325,
-            messages: [
-                {
-                    role: 'system',
-                    content: [{ text: systemPromptText }] // Use the refined prompt
-                },
-                {
-                    role: 'user',
-                    content: [
-                        {
-                            text: `User description: "${input.description}"`
-                        },
-                        ...imageContents
-                    ]
-                }
-            ]
-        });
-        // Parse the response to extract screenshot, path, and parameters
-        const responseText = response.text || '';
-        console.log(`[screenResolverTool] Raw LLM response: ${responseText.substring(0, 200)}...`);
-        // Parse LLM output for best match
-        const bestMatchMatch = responseText.match(/BEST_MATCH:\s*(.+?)(\n|$)/i);
-        const pathMatch = responseText.match(/PATH:\s*(.+?)(\n|$)/i);
-        const paramsMatch = responseText.match(/PARAMS:\s*\[(.*?)\]/i);
-        let bestMatch = bestMatchMatch ? bestMatchMatch[1].trim() : null;
-        let path = pathMatch ? pathMatch[1].trim() : '';
-        let params = [];
-        if (paramsMatch && paramsMatch[1]) {
-            params = paramsMatch[1].split(',')
-                .map(p => p.trim())
-                .filter(p => p.length > 0)
-                .map(p => p.replace(/['"]/g, ''));
-        }
-        // Verify that the bestMatch screenshot actually exists
-        if (bestMatch && !allScreenshots.includes(bestMatch)) {
-            console.warn(`[screenResolverTool] Warning: LLM identified screenshot "${bestMatch}" not found in directory`);
-            // Try to find a close match
-            const similarScreenshot = allScreenshots.find(s => s.toLowerCase().includes(bestMatch?.toLowerCase().replace('.png', '') || ''));
-            if (similarScreenshot) {
-                console.log(`[screenResolverTool] Found similar screenshot: ${similarScreenshot}`);
-                bestMatch = similarScreenshot;
-            }
-            else {
-                bestMatch = null;
-            }
-        }
-        // Extract alternative matches
-        const alternativesSection = responseText.match(/ALTERNATIVES:([\s\S]*?)($|(?=\n\n))/i);
-        const alternativeMatches = [];
-        if (alternativesSection && alternativesSection[1]) {
-            const alternativesText = alternativesSection[1].trim();
-            const alternativeLines = alternativesText.split('\n');
-            for (const line of alternativeLines) {
-                // Format could be: - filename.png (path/to/screen): Description
-                const altMatch = line.match(/\s*-\s*([\w\-._]+)(?:\s*\(([\w\-./{}:?=&]+)\))?:?\s*(.*)/);
-                if (altMatch) {
-                    const [_, fileName, altPath, description] = altMatch;
-                    // Only add if the file exists
-                    if (fileName && allScreenshots.includes(fileName.trim())) {
-                        alternativeMatches.push({
-                            path: altPath?.trim() || convertScreenshotToPath(fileName.trim()),
-                            screenshotFile: fileName.trim(),
-                            description: description?.trim() || 'Alternative match'
-                        });
+        try {
+            const response = await aiInstance.generate({
+                model: vertexai_1.gemini25ProPreview0325,
+                messages: [
+                    {
+                        role: 'system',
+                        content: [{ text: systemPromptText }] // Use the refined prompt
+                    },
+                    {
+                        role: 'user',
+                        content: [
+                            {
+                                text: `User description: "${input.description}"`
+                            },
+                            ...imageContents
+                        ]
                     }
-                    else {
-                        // Try to find a similar screenshot
-                        const similarScreenshot = allScreenshots.find(s => s.toLowerCase().includes(fileName?.toLowerCase().replace('.png', '') || ''));
-                        if (similarScreenshot) {
+                ]
+            });
+            // Parse the response to extract screenshot, path, and parameters
+            const responseText = response.text || '';
+            console.log(`[screenResolverTool] Raw LLM response: ${responseText.substring(0, 200)}...`);
+            // Parse LLM output for best match
+            const bestMatchMatch = responseText.match(/BEST_MATCH:\s*(.+?)(\n|$)/i);
+            const pathMatch = responseText.match(/PATH:\s*(.+?)(\n|$)/i);
+            const paramsMatch = responseText.match(/PARAMS:\s*\[(.*?)\]/i);
+            let bestMatch = bestMatchMatch ? bestMatchMatch[1].trim() : null;
+            let path = pathMatch ? pathMatch[1].trim() : '';
+            let params = [];
+            if (paramsMatch && paramsMatch[1]) {
+                params = paramsMatch[1].split(',')
+                    .map(p => p.trim())
+                    .filter(p => p.length > 0)
+                    .map(p => p.replace(/['"]/g, ''));
+            }
+            // Verify that the bestMatch screenshot actually exists
+            if (bestMatch && !allScreenshots.includes(bestMatch)) {
+                console.warn(`[screenResolverTool] Warning: LLM identified screenshot "${bestMatch}" not found in directory`);
+                // Try to find a close match
+                const similarScreenshot = allScreenshots.find(s => s.toLowerCase().includes(bestMatch?.toLowerCase().replace('.png', '') || ''));
+                if (similarScreenshot) {
+                    console.log(`[screenResolverTool] Found similar screenshot: ${similarScreenshot}`);
+                    bestMatch = similarScreenshot;
+                }
+                else {
+                    bestMatch = null;
+                }
+            }
+            // Extract alternative matches
+            const alternativesSection = responseText.match(/ALTERNATIVES:([\s\S]*?)($|(?=\n\n))/i);
+            const alternativeMatches = [];
+            if (alternativesSection && alternativesSection[1]) {
+                const alternativesText = alternativesSection[1].trim();
+                const alternativeLines = alternativesText.split('\n');
+                for (const line of alternativeLines) {
+                    // Format could be: - filename.png (path/to/screen): Description
+                    const altMatch = line.match(/\s*-\s*([\w\-._]+)(?:\s*\(([\w\-./{}:?=&]+)\))?:?\s*(.*)/);
+                    if (altMatch) {
+                        const [_, fileName, altPath, description] = altMatch;
+                        // Only add if the file exists
+                        if (fileName && allScreenshots.includes(fileName.trim())) {
                             alternativeMatches.push({
-                                path: altPath?.trim() || convertScreenshotToPath(similarScreenshot),
-                                screenshotFile: similarScreenshot,
+                                path: altPath?.trim() || convertScreenshotToPath(fileName.trim()),
+                                screenshotFile: fileName.trim(),
                                 description: description?.trim() || 'Alternative match'
                             });
+                        }
+                        else {
+                            // Try to find a similar screenshot
+                            const similarScreenshot = allScreenshots.find(s => s.toLowerCase().includes(fileName?.toLowerCase().replace('.png', '') || ''));
+                            if (similarScreenshot) {
+                                alternativeMatches.push({
+                                    path: altPath?.trim() || convertScreenshotToPath(similarScreenshot),
+                                    screenshotFile: similarScreenshot,
+                                    description: description?.trim() || 'Alternative match'
+                                });
+                            }
                         }
                     }
                 }
             }
+            // If no clear path was identified but we have a screenshot, derive path from screenshot
+            if (!path && bestMatch) {
+                path = convertScreenshotToPath(bestMatch);
+            }
+            // If we still don't have a path but have alternatives, use the first alternative
+            if (!path && alternativeMatches.length > 0) {
+                path = alternativeMatches[0].path;
+                bestMatch = alternativeMatches[0].screenshotFile;
+                alternativeMatches.shift(); // Remove the first one as it's now the main match
+            }
+            // If still no path, return an error
+            if (!path) {
+                return {
+                    path: '',
+                    screenshotFile: null,
+                    error: 'Could not identify a matching screen based on the description'
+                };
+            }
+            return {
+                path,
+                screenshotFile: bestMatch,
+                requiredParams: params.length > 0 ? params : undefined,
+                alternativeMatches: alternativeMatches.length > 0 ? alternativeMatches : undefined,
+                error: null
+            };
         }
-        // If no clear path was identified but we have a screenshot, derive path from screenshot
-        if (!path && bestMatch) {
-            path = convertScreenshotToPath(bestMatch);
-        }
-        // If we still don't have a path but have alternatives, use the first alternative
-        if (!path && alternativeMatches.length > 0) {
-            path = alternativeMatches[0].path;
-            bestMatch = alternativeMatches[0].screenshotFile;
-            alternativeMatches.shift(); // Remove the first one as it's now the main match
-        }
-        // If still no path, return an error
-        if (!path) {
+        catch (error) {
+            console.error(`[screenResolverTool] Error generating response:`, error);
             return {
                 path: '',
                 screenshotFile: null,
-                error: 'Could not identify a matching screen based on the description'
+                error: `Error analyzing screenshots: ${error.message || "Unknown error"}`
             };
         }
-        return {
-            path,
-            screenshotFile: bestMatch,
-            requiredParams: params.length > 0 ? params : undefined,
-            alternativeMatches: alternativeMatches.length > 0 ? alternativeMatches : undefined,
-            error: null
-        };
     });
 }
 /**

@@ -284,7 +284,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
 
             // Extract text and possibly uploaded image from input
             let userText = typeof userInput === 'string' ? userInput : userInput.text;
-            const uploadedImage = typeof userInput === 'string' ? undefined : userInput.uploadedImage;
+            let uploadedImage = typeof userInput === 'string' ? undefined : userInput.uploadedImage;
 
             // Initialize state if this is the first turn
             if (!flowState.history) {
@@ -293,13 +293,25 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                 flowState.extractedParams = {};
             }
 
-            // Store uploaded image in state if provided
+            // Sanitize and store uploaded image in state if provided
             if (uploadedImage) {
-                flowState.uploadedScreenshot = uploadedImage;
-                console.log(`[deeplinkHelperFlow] User uploaded a screenshot`);
+                try {
+                    // Make sure we have a valid image format
+                    if (!uploadedImage.startsWith('data:image/')) {
+                        // Try to add appropriate prefix if missing
+                        uploadedImage = `data:image/jpeg;base64,${uploadedImage.replace(/^data:image\/[^;]+;base64,/, '')}`;
+                    }
+                    flowState.uploadedScreenshot = uploadedImage;
+                    console.log(`[deeplinkHelperFlow] User uploaded a screenshot`);
+                } catch (error) {
+                    console.error(`[deeplinkHelperFlow] Error processing uploaded screenshot:`, error);
+                    // Continue without the image
+                    flowState.uploadedScreenshot = undefined;
+                }
             }
 
             console.log(`[deeplinkHelperFlow] Turn Start. Input: "${userText}", Current Step: ${flowState.step}`);
+            // Only add text content to history to avoid unsupported type errors
             flowState.history.push({ role: 'user', content: [{ text: userText }] });
 
             // Check for upload issues and add to state context if detected
@@ -491,10 +503,21 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     const stepInstructions = getStepInstructions(flowState.step, flowState);
                     if (stepInstructions.startsWith("Error:")) throw new Error(stepInstructions);
 
+                    // Create simple messages with only text content
                     const messages: MessageData[] = [
                         { role: 'system', content: [{ text: stepInstructions }] },
-                        ...flowState.history.slice(-10).filter(msg => msg.role !== 'system'), // Filter out any system messages from history
                     ];
+
+                    // Add user messages with only text content
+                    const historyMessages = flowState.history
+                        .slice(-10)
+                        .filter(msg => msg.role !== 'system')
+                        .map(msg => ({
+                            role: msg.role,
+                            content: [{ text: msg.content[0]?.text || '' }]
+                        }));
+
+                    messages.push(...historyMessages);
                     const availableTools = [screenResolverTool, parameterExtractorTool, deliverableGeneratorTool];
 
                     // Note for LLM if screenshot was uploaded in this session
@@ -504,7 +527,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         if (lastUserIndex !== -1) {
                             const userText = messages[lastUserIndex].content[0]?.text || '';
                             messages[lastUserIndex].content = [{
-                                text: `${userText} [System Note: I've uploaded a screenshot to help identify the screen]`
+                                text: `${userText} [Note: I've uploaded a screenshot to help identify the screen]`
                             }];
                         }
                     }
