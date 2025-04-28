@@ -24,6 +24,7 @@ interface DeeplinkFlowState {
     deliverableType?: 'adjust_link' | 'qr_code' | 'push_payload';
     generatedDeliverable?: string;
     errorMessage?: string;
+    potentialMatches?: Array<{ path: string; screenshotFile?: string; requiredParams: string[] }>;
 }
 
 const initialState: DeeplinkFlowState = {
@@ -469,28 +470,99 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
 
                             try {
                                 if (response.name === screenResolverTool.name && (state.step === 'objective_clarified' || state.step === 'path_identified')) {
-                                    const result = response.output as { path: string, screenshotFile?: string, requiredParams?: string[] };
+                                    const result = response.output as { path: string, screenshotFile?: string, requiredParams?: string[], alternativeMatches?: Array<{ path: string, screenshotFile?: string, description: string }> };
                                     if (result?.path) {
                                         // Check if this path was previously rejected
                                         const wasRejected = state.userScreenDescription?.includes(`rejected: ${result.path}`);
                                         if (wasRejected) {
                                             console.log(`[Orchestrator] Warning: ScreenResolverTool returned a previously rejected path: ${result.path}`);
-                                            // Force a different response than just showing the same screen again
-                                            agentResponseContent = "I'm having trouble understanding which screen you need. Could you describe it differently? For example, tell me what actions you can perform on this screen or what information it displays.";
+
+                                            // Instead of just showing an error, try to use alternative matches if available
+                                            if (result.alternativeMatches && result.alternativeMatches.length > 0) {
+                                                // Find the first alternative that wasn't rejected
+                                                const validAlternative = result.alternativeMatches.find(alt =>
+                                                    !state.userScreenDescription?.includes(`rejected: ${alt.path}`)
+                                                );
+
+                                                if (validAlternative) {
+                                                    console.log(`[Orchestrator] Using alternative path: ${validAlternative.path} instead of rejected path`);
+                                                    state.identifiedPathTemplate = validAlternative.path;
+                                                    state.identifiedScreenshotFile = validAlternative.screenshotFile || null;
+                                                    state.requiredParams = validAlternative.path.match(/:[a-zA-Z0-9-_]+\??/g) || [];
+                                                    state.extractedParams = {}; // Reset params when path changes
+                                                    state.step = 'path_identified'; // Move to prepare confirmation
+                                                    needsLlmCall = true;
+                                                    continue; // Restart loop to get confirmation instructions
+                                                }
+                                            }
+
+                                            // If no valid alternatives, force a different response than just showing the same screen again
+                                            agentResponseContent = "I'm having trouble understanding which screen you need. Could you describe it differently? For example, tell me what actions you can perform on this screen or what information it displays. You can also upload a screenshot if available.";
                                             needsLlmCall = false;
                                             break; // Don't process other tools
                                         }
 
-                                        state.identifiedPathTemplate = result.path;
-                                        state.identifiedScreenshotFile = result.screenshotFile || null;
-                                        state.requiredParams = result.requiredParams || [];
-                                        state.extractedParams = {}; // Reset params when path changes
-                                        state.step = 'path_identified'; // Move to prepare confirmation
-                                        console.log(`[Orchestrator] ScreenResolverTool success. Path: ${result.path}, Screenshot: ${result.screenshotFile}. Moving to step: ${state.step}`);
-                                        needsLlmCall = true; // Need LLM to generate confirmation msg now
-                                        continue; // Restart loop to get confirmation instructions
+                                        // If multiple matches were found and not handling a specific match request
+                                        if (result.alternativeMatches && result.alternativeMatches.length > 0 && !userInput.match(/\b(option|choice|alternative|#|number)\s*(\d+|\w+)\b/i)) {
+                                            // Present the options to the user for selection
+                                            const options = [`**Main Match:** ${result.screenshotFile || result.path} - ${result.path}`];
+
+                                            result.alternativeMatches.forEach((alt, index) => {
+                                                options.push(`**Option ${index + 1}:** ${alt.screenshotFile || alt.path} - ${alt.description || alt.path}`);
+                                            });
+
+                                            agentResponseContent = `Based on your description, I found multiple potential matches:\n\n${options.join('\n')}\n\nWhich one best matches what you're looking for? You can select by number or description.`;
+
+                                            // Store the matches for later reference
+                                            state.potentialMatches = [
+                                                { path: result.path, screenshotFile: result.screenshotFile || null, requiredParams: result.requiredParams || [] },
+                                                ...result.alternativeMatches.map(alt => ({
+                                                    path: alt.path,
+                                                    screenshotFile: alt.screenshotFile || null,
+                                                    requiredParams: alt.path.match(/:[a-zA-Z0-9-_]+\??/g) || []
+                                                }))
+                                            ];
+
+                                            needsLlmCall = false;
+                                            break; // Don't process other tools
+                                        }
+                                        // If the user is responding to a multiple choice selection
+                                        else if (state.potentialMatches && state.potentialMatches.length > 0 && userInput.match(/\b(option|choice|alternative|#|number)?\s*(\d+|\w+)\b/i)) {
+                                            const choiceMatch = userInput.match(/\b(option|choice|alternative|#|number)?\s*(\d+|\w+)\b/i);
+                                            let selectedIndex = 0; // Default to main match
+
+                                            if (choiceMatch && choiceMatch[2]) {
+                                                // Try to parse selected option number
+                                                const optionNumber = parseInt(choiceMatch[2]);
+                                                if (!isNaN(optionNumber) && optionNumber > 0 && optionNumber <= state.potentialMatches.length - 1) {
+                                                    selectedIndex = optionNumber;
+                                                }
+                                            }
+
+                                            const selectedMatch = state.potentialMatches[selectedIndex];
+                                            state.identifiedPathTemplate = selectedMatch.path;
+                                            state.identifiedScreenshotFile = selectedMatch.screenshotFile;
+                                            state.requiredParams = selectedMatch.requiredParams;
+                                            state.extractedParams = {}; // Reset params when path changes
+                                            state.potentialMatches = undefined; // Clear potential matches
+                                            state.step = 'path_identified'; // Move to prepare confirmation
+                                            console.log(`[Orchestrator] User selected match ${selectedIndex}: ${selectedMatch.path}`);
+                                            needsLlmCall = true;
+                                            continue; // Restart loop to get confirmation instructions
+                                        }
+                                        // Normal single match flow
+                                        else {
+                                            state.identifiedPathTemplate = result.path;
+                                            state.identifiedScreenshotFile = result.screenshotFile || null;
+                                            state.requiredParams = result.requiredParams || [];
+                                            state.extractedParams = {}; // Reset params when path changes
+                                            state.step = 'path_identified'; // Move to prepare confirmation
+                                            console.log(`[Orchestrator] ScreenResolverTool success. Path: ${result.path}, Screenshot: ${result.screenshotFile}. Moving to step: ${state.step}`);
+                                            needsLlmCall = true; // Need LLM to generate confirmation msg now
+                                            continue; // Restart loop to get confirmation instructions
+                                        }
                                     } else {
-                                        agentResponseContent = "I couldn't identify a specific screen from that description. Could you try describing it differently or mentioning a key feature?";
+                                        agentResponseContent = "I couldn't identify a specific screen from that description. Could you try describing it differently or mentioning a key feature? Uploading a screenshot would also help.";
                                         needsLlmCall = false; // Don't call LLM again this turn
                                     }
                                 } else if (response.name === parameterExtractorTool.name && state.step === 'url_request_pending' && state.parameterToExtract) {

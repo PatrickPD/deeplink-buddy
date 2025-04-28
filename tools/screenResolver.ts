@@ -1,130 +1,241 @@
 import * as fs from 'fs';
-import { Genkit, ToolConfig } from 'genkit';
-import { ToolAction } from 'genkit/tool'; // Import ToolAction
+import { Genkit } from 'genkit';
+import { ToolAction } from 'genkit/tool';
 import * as path from 'path';
 import { z } from 'zod';
-import { normalizePathForScreenshot } from '../prompts/systemPrompt'; // Import helper
-
-// Placeholder for accessing parsed reference data (or LLM will use prompt context)
-// In a real app, you'd load/parse linkingConfig.json and targets.json here
-// For now, the LLM is expected to use the context provided in the main prompt
-// or this tool could be enhanced to load data from files like 'data/linkingConfig.json'
-// const MOCK_LINKING_CONFIG = { /* Parsed structure */ };
-// const MOCK_TARGETS = { /* Parsed structure */ };
 
 // Define the path to the screenshots directory relative to the project root
-// Adjust this path if your directory structure is different
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || './screenshots';
 
 // Define input schema for easier type inference
 const ScreenResolverInputSchema = z.object({
-    userDescription: z.string().describe("User's description of the desired screen (e.g., 'product page', 'order history', 'AGB')"),
-    // LLM should provide the path it identified based on the description and reference docs
-    identifiedPath: z.string().describe("The canonical deeplink path (without gesund://) identified by the LLM from linkingConfig.ts based on the user description."),
-    // LLM provides the description it found
-    pathDescription: z.string().describe("Textual description of the screen identified by the LLM from deeplink_targets.txt."),
-    // LLM determines required params based on the path structure in linkingConfig
-    requiredParams: z.array(z.string()).nullable().optional().describe("List of required parameters (e.g., [':id', ':category']) identified by the LLM for the path, or null if none."),
+    description: z.string().describe("User's description of the desired screen (e.g., 'product page', 'order history', etc.)"),
+    uploadedScreenshot: z.string().optional().describe("Base64-encoded screenshot provided by the user (if available)"),
 });
 
-// Define output schema
+// Define output schema with multiple potential matches
 const ScreenResolverOutputSchema = z.object({
-    likelyPath: z.string().describe("The confirmed canonical deeplink path provided as input."),
-    screenDescription: z.string().describe("The textual description provided as input."),
-    screenshotFilename: z.string().nullable().describe("Filename of the corresponding screenshot (e.g., 'profile_orders.png') if found in the screenshots directory, otherwise null."),
-    requiredParams: z.array(z.string()).nullable().describe("List of required parameters provided as input."),
-    error: z.string().nullable().describe("Error message if screenshot check failed (but identification is based on input)."),
+    path: z.string().describe("The best matching deeplink path (without gesund://)"),
+    screenshotFile: z.string().nullable().describe("Filename of the best matching screenshot if found, otherwise null"),
+    requiredParams: z.array(z.string()).optional().describe("List of required parameters for the path"),
+    alternativeMatches: z.array(z.object({
+        path: z.string().describe("Alternative matching path"),
+        screenshotFile: z.string().nullable().describe("Filename of the alternative screenshot if any"),
+        description: z.string().describe("Brief description of this screen")
+    })).optional().describe("Alternative potential matches if available"),
+    error: z.string().nullable().optional().describe("Error message if any occurred"),
 });
 
-// Export the configuration for the tool
-export const screenResolverToolConfig: ToolConfig<typeof ScreenResolverInputSchema, typeof ScreenResolverOutputSchema> = {
-    name: 'screenResolver',
-    description: 'Identifies the target app screen based on user description, finds its canonical path from linkingConfig, description from targets, and checks for a corresponding screenshot. Relies on LLM context for linkingConfig/targets mapping.',
-    inputSchema: ScreenResolverInputSchema,
-    outputSchema: ScreenResolverOutputSchema,
-};
-
-// Define the expected function type
-type ScreenResolverFn =
-    (input: z.infer<typeof ScreenResolverInputSchema>) => Promise<z.infer<typeof ScreenResolverOutputSchema>>;
-
-// Export the implementation function for the tool
-export const screenResolverToolFn: ScreenResolverFn =
-    async (input) => {
-        const identifiedPath = input.identifiedPath;
-        const potentialFilename = normalizePathForScreenshot(identifiedPath);
-        let foundFilename: string | null = null;
-        let checkError: string | null = null;
-
-        try {
-            const fullScreenshotDir = path.resolve(SCREENSHOT_DIR);
-            const fullScreenshotPath = path.join(fullScreenshotDir, potentialFilename);
-
-            if (!fs.existsSync(fullScreenshotDir)) {
-                console.warn(`Screenshots directory not found: ${fullScreenshotDir}`);
-                checkError = `Screenshots directory not found at configured path: ${SCREENSHOT_DIR}`;
-            } else if (fs.existsSync(fullScreenshotPath)) {
-                console.log(`[screenResolverTool] Found screenshot: ${fullScreenshotPath}`);
-                foundFilename = potentialFilename;
-            } else {
-                console.log(`[screenResolverTool] Screenshot not found: ${fullScreenshotPath}`);
-            }
-        } catch (err: any) {
-            console.error(`[screenResolverTool] Error checking screenshot directory: ${err.message}`);
-            checkError = `Error accessing screenshot directory: ${err.message}`;
+/**
+ * Reads all available screenshots from the directory
+ */
+function getAllScreenshots(): string[] {
+    try {
+        const fullScreenshotDir = path.resolve(SCREENSHOT_DIR);
+        if (!fs.existsSync(fullScreenshotDir)) {
+            console.warn(`Screenshots directory not found: ${fullScreenshotDir}`);
+            return [];
         }
+        const files = fs.readdirSync(fullScreenshotDir);
+        const screenshots = files.filter(file => file.toLowerCase().endsWith('.png'));
+        console.log(`[screenResolverTool] Found ${screenshots.length} screenshots`);
+        return screenshots;
+    } catch (error: any) {
+        console.error(`[screenResolverTool] Error reading screenshots directory: ${error.message}`);
+        return [];
+    }
+}
 
-        return {
-            likelyPath: identifiedPath,
-            screenDescription: input.pathDescription,
-            screenshotFilename: foundFilename,
-            requiredParams: input.requiredParams ?? null,
-            error: checkError,
-        };
-    };
-
-// Revert to factory function
 export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof ScreenResolverInputSchema, typeof ScreenResolverOutputSchema> {
     return aiInstance.defineTool(
         {
-            name: 'screenResolver',
-            description: 'Identifies the target app screen..., checks for screenshot...',
+            name: 'screenResolverTool',
+            description: 'Resolves a user\'s description to the most likely screen by examining all available screenshots and matching to the relevant deeplink path.',
             inputSchema: ScreenResolverInputSchema,
             outputSchema: ScreenResolverOutputSchema,
         },
         async (input: z.infer<typeof ScreenResolverInputSchema>): Promise<z.infer<typeof ScreenResolverOutputSchema>> => {
-            // Restore the full original implementation logic here
-            const identifiedPath = input.identifiedPath;
-            const potentialFilename = normalizePathForScreenshot(identifiedPath);
-            let foundFilename: string | null = null;
-            let checkError: string | null = null;
+            console.log(`[screenResolverTool] Called with description: "${input.description}"`);
 
-            try {
-                const fullScreenshotDir = path.resolve(SCREENSHOT_DIR);
-                const fullScreenshotPath = path.join(fullScreenshotDir, potentialFilename);
-
-                if (!fs.existsSync(fullScreenshotDir)) {
-                    console.warn(`Screenshots directory not found: ${fullScreenshotDir}`);
-                    checkError = `Screenshots directory not found at configured path: ${SCREENSHOT_DIR}`;
-                } else if (fs.existsSync(fullScreenshotPath)) {
-                    console.log(`[screenResolverTool] Found screenshot: ${fullScreenshotPath}`);
-                    foundFilename = potentialFilename;
-                } else {
-                    console.log(`[screenResolverTool] Screenshot not found: ${fullScreenshotPath}`);
-                }
-            } catch (err: any) {
-                console.error(`[screenResolverTool] Error checking screenshot directory: ${err.message}`);
-                checkError = `Error accessing screenshot directory: ${err.message}`;
+            // Get all available screenshots
+            const allScreenshots = getAllScreenshots();
+            if (allScreenshots.length === 0) {
+                return {
+                    path: '',
+                    screenshotFile: null,
+                    error: 'No screenshots available in the directory'
+                };
             }
 
-            // Return the full object matching the output schema
+            // Create a prompt that includes screenshots for the LLM to analyze
+            const response = await aiInstance.generate({
+                messages: [
+                    {
+                        role: 'system',
+                        content: [
+                            {
+                                text: `You are a screen matching expert for a mobile app. Your task is to find the best matching screenshot and path based on the user's description.
+
+Available screenshots (${allScreenshots.length}):
+${allScreenshots.map(file => `- ${file}`).join('\n')}
+
+Screenshot filenames follow these conventions:
+1. Path segments are separated by underscores (e.g., "profile_orders.png" for "profile/orders")
+2. Special characters like ':', '?', '=', '@' are replaced with underscores
+3. Some screenshots may have descriptive names rather than exact paths
+
+Analyze the user's description and the available screenshots to:
+1. Identify the most likely matching screenshot
+2. Determine the corresponding deeplink path (convert underscores back to slashes where appropriate)
+3. Identify any required parameters (marked with ':' or '?' in the path)
+4. If there are multiple good matches, include them as alternatives
+
+Your response should be in this format:
+BEST_MATCH: [screenshot filename]
+PATH: [corresponding path]
+PARAMS: [list of parameters if any]
+ALTERNATIVES: [list other potential matches with brief descriptions]
+
+Example:
+BEST_MATCH: profile_orders.png
+PATH: profile/orders
+PARAMS: []
+ALTERNATIVES:
+- profile_personal-info.png (profile/personal-info): User profile information screen
+- pharmacy_orders.png (pharmacy/orders): Orders from pharmacies
+`
+                            }
+                        ]
+                    },
+                    {
+                        role: 'user',
+                        content: [
+                            {
+                                text: `User description: "${input.description}"`
+                            }
+                        ]
+                    }
+                ]
+            });
+
+            // Parse the response to extract screenshot, path, and parameters
+            const responseText = response.text || '';
+            console.log(`[screenResolverTool] Raw LLM response: ${responseText.substring(0, 200)}...`);
+
+            // Parse LLM output for best match
+            const bestMatchMatch = responseText.match(/BEST_MATCH:\s*(.+?)(\n|$)/i);
+            const pathMatch = responseText.match(/PATH:\s*(.+?)(\n|$)/i);
+            const paramsMatch = responseText.match(/PARAMS:\s*\[(.*?)\]/i);
+
+            let bestMatch = bestMatchMatch ? bestMatchMatch[1].trim() : null;
+            let path = pathMatch ? pathMatch[1].trim() : '';
+            let params: string[] = [];
+
+            if (paramsMatch && paramsMatch[1]) {
+                params = paramsMatch[1].split(',')
+                    .map(p => p.trim())
+                    .filter(p => p.length > 0)
+                    .map(p => p.replace(/['"]/g, ''));
+            }
+
+            // Verify that the bestMatch screenshot actually exists
+            if (bestMatch && !allScreenshots.includes(bestMatch)) {
+                console.warn(`[screenResolverTool] Warning: LLM identified screenshot "${bestMatch}" not found in directory`);
+                // Try to find a close match
+                const similarScreenshot = allScreenshots.find(s =>
+                    s.toLowerCase().includes(bestMatch?.toLowerCase().replace('.png', '') || '')
+                );
+                if (similarScreenshot) {
+                    console.log(`[screenResolverTool] Found similar screenshot: ${similarScreenshot}`);
+                    bestMatch = similarScreenshot;
+                } else {
+                    bestMatch = null;
+                }
+            }
+
+            // Extract alternative matches
+            const alternativesSection = responseText.match(/ALTERNATIVES:([\s\S]*?)($|(?=\n\n))/i);
+            const alternativeMatches: Array<{ path: string, screenshotFile: string | null, description: string }> = [];
+
+            if (alternativesSection && alternativesSection[1]) {
+                const alternativesText = alternativesSection[1].trim();
+                const alternativeLines = alternativesText.split('\n');
+
+                for (const line of alternativeLines) {
+                    // Format could be: - filename.png (path/to/screen): Description
+                    const altMatch = line.match(/\s*-\s*([\w\-._]+)(?:\s*\(([\w\-./{}:?=&]+)\))?:?\s*(.*)/);
+                    if (altMatch) {
+                        const [_, fileName, altPath, description] = altMatch;
+
+                        // Only add if the file exists
+                        if (fileName && allScreenshots.includes(fileName.trim())) {
+                            alternativeMatches.push({
+                                path: altPath?.trim() || convertScreenshotToPath(fileName.trim()),
+                                screenshotFile: fileName.trim(),
+                                description: description?.trim() || 'Alternative match'
+                            });
+                        } else {
+                            // Try to find a similar screenshot
+                            const similarScreenshot = allScreenshots.find(s =>
+                                s.toLowerCase().includes(fileName?.toLowerCase().replace('.png', '') || '')
+                            );
+                            if (similarScreenshot) {
+                                alternativeMatches.push({
+                                    path: altPath?.trim() || convertScreenshotToPath(similarScreenshot),
+                                    screenshotFile: similarScreenshot,
+                                    description: description?.trim() || 'Alternative match'
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If no clear path was identified but we have a screenshot, derive path from screenshot
+            if (!path && bestMatch) {
+                path = convertScreenshotToPath(bestMatch);
+            }
+
+            // If we still don't have a path but have alternatives, use the first alternative
+            if (!path && alternativeMatches.length > 0) {
+                path = alternativeMatches[0].path;
+                bestMatch = alternativeMatches[0].screenshotFile;
+                alternativeMatches.shift(); // Remove the first one as it's now the main match
+            }
+
+            // If still no path, return an error
+            if (!path) {
+                return {
+                    path: '',
+                    screenshotFile: null,
+                    error: 'Could not identify a matching screen based on the description'
+                };
+            }
+
             return {
-                likelyPath: identifiedPath,
-                screenDescription: input.pathDescription,
-                screenshotFilename: foundFilename,
-                requiredParams: input.requiredParams ?? null,
-                error: checkError,
+                path,
+                screenshotFile: bestMatch,
+                requiredParams: params.length > 0 ? params : undefined,
+                alternativeMatches: alternativeMatches.length > 0 ? alternativeMatches : undefined,
+                error: null
             };
         }
     );
+}
+
+/**
+ * Helper function to convert a screenshot filename back to a likely path
+ */
+function convertScreenshotToPath(filename: string): string {
+    // Remove .png extension
+    let path = filename.replace('.png', '');
+
+    // Replace underscores with slashes where they likely represent path separators
+    // This is an approximation and may need refinement based on your specific naming conventions
+    path = path.replace(/_/g, '/');
+
+    // Handle common special patterns (add more as needed)
+    path = path.replace(/\/\//g, '/'); // Remove double slashes
+
+    return path;
 } 
