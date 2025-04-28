@@ -59,6 +59,27 @@ if "current_image" not in st.session_state:
 if "last_uploaded_file_id" not in st.session_state:
     st.session_state.last_uploaded_file_id = None # Track the ID of the last processed upload
 
+# Function to compress and resize images
+def compress_image(pil_image, max_size=(800, 800), quality=85):
+    """Resize and compress image to reduce payload size"""
+    # Resize while maintaining aspect ratio if larger than max_size
+    width, height = pil_image.size
+    if width > max_size[0] or height > max_size[1]:
+        pil_image.thumbnail(max_size, Image.LANCZOS)
+    
+    # Create compressed image in memory
+    compressed_buf = io.BytesIO()
+    
+    # Save with compression (quality factor)
+    if pil_image.mode == 'RGBA':
+        # Convert RGBA to RGB to ensure JPEG compatibility
+        pil_image = pil_image.convert('RGB')
+    
+    pil_image.save(compressed_buf, format="JPEG", quality=quality, optimize=True)
+    
+    # Get the compressed result
+    compressed_buf.seek(0)
+    return Image.open(compressed_buf)
 
 # --- Streamlit App Layout ---
 st.set_page_config(page_title=PAGE_TITLE, page_icon=LOGO_PATH)
@@ -79,7 +100,11 @@ with st.sidebar:
         try:
             image_bytes = uploaded_file.getvalue()
             pil_image = Image.open(io.BytesIO(image_bytes))
-            st.session_state.current_image = pil_image # Store the image for the next message
+            
+            # Compress and resize the image
+            pil_image = compress_image(pil_image)
+            
+            st.session_state.current_image = pil_image # Store the compressed image for the next message
             st.session_state.last_uploaded_file_id = uploaded_file.file_id # Mark this file ID as processed
             # st.session_state.image_processed_this_turn = False # Less relevant now
         except Exception as e:
@@ -161,7 +186,7 @@ if prompt := st.chat_input("What deeplink or analysis do you need?"):
     if st.session_state.current_image:
         # Convert image to base64
         buf = io.BytesIO()
-        st.session_state.current_image.save(buf, format="PNG")
+        st.session_state.current_image.save(buf, format="JPEG", quality=85, optimize=True)
         img_b64 = base64.b64encode(buf.getvalue()).decode()
         
         # Create payload with text and image
