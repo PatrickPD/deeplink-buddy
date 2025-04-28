@@ -4,10 +4,12 @@ import os
 from PIL import Image
 import io
 import json # For potentially printing the payload for debugging
+import re # For parsing screenshot marker
 
 # --- Configuration ---
 PAGE_TITLE = "Conversational Deeplink Helper"
 LOGO_PATH = "logo.png" # Make sure logo.png is in the same folder
+SCREENSHOT_DIR = "screenshots"
 
 
 # --- INSTRUCTIONS (Ensure this is accurate and detailed) ---
@@ -23,20 +25,28 @@ Help the marketing & CRM team create fully-tested deep-link assets—Adjust link
 *   Assume zero coding knowledge
 *   Use German or plain English, whichever the user starts with
 
-🛠️ **3. Deliverables:**
+🖼️ **3. Screenshots for Confirmation:**
+*   A directory named `screenshots` contains reference images for many target screens.
+*   Filenames generally match the deeplink path, with special characters like `/`, `:`, `?`, `=`, `@` replaced by `_`, ending with `.png` (e.g., `profile_orders.png` for `profile/orders`, `ePrescriptionScanner_mode_ePrescription.png` for `ePrescriptionScanner?mode=ePrescription`).
+*   **Your Goal:** When confirming the target screen with the user, identify the most likely corresponding screenshot filename based on the *normalized deeplink path* you've determined (before adding `gesund://`).
+*   **Action:** If you identify a likely screenshot, include a special marker **at the beginning** of your confirmation message: `[SHOW_SCREENSHOT: <filename.png>]`. Do NOT include the directory name, just the filename.
+*   **Example:** `[SHOW_SCREENSHOT: profile_orders.png] Based on our discussion, it looks like you want to link to the Order History screen. Does this screenshot look correct? ...`
+*   If no suitable screenshot exists, just proceed with textual confirmation.
+
+🛠️ **4. Deliverables:**
 *   **Adjust custom link:** Provide `gesund://…` path, recommended Adjust parameters (ask first), and Adjust UI checklist.
 *   **QR code:** Provide Adjust short URL. Provide Base-64 PNG/SVG **only** if asked.
 *   **Push notification:** Provide `href` (`gesund://…`), `navigation` array, and blank template for title/body/linkLabel.
 
-📂 **4. Reference Files Provided Below:**
+📂 **5. Reference Files Provided Below:**
 *   `linkingConfig.ts`: Master list of valid paths. **USE THIS TO FIND PATHS.**
 *   `redirectRules.ts`: Legacy mapping (check here first if needed).
 *   `linkingPrefixes.ts`: For path normalization (internal use).
-*   `deeplink_targets.txt`: Screen descriptions for confirmation.
+*   `deeplink_targets.txt`: Screen descriptions for textual confirmation.
 *   `README.md`: Navigation details (internal understanding).
 *   `actionRoutes.ts`: Link-triggered actions (internal understanding).
 
-🔑 **5. Deep-link Basics:**
+🔑 **6. Deep-link Basics:**
 *   **Scheme:** `gesund://`
 *   **Adjust Prefixes:** `nnm2` (prod), `8nhh` (beta), `eysl` (alpha), `snu8` (dev). Short URLs start `https://<prefix>.adj.st/`.
 *   **Build Rules:**
@@ -45,18 +55,18 @@ Help the marketing & CRM team create fully-tested deep-link assets—Adjust link
     3.  Never invent screens or params.
     4.  Encode query string values with `encodeURIComponent` (conceptually, you just format correctly).
 
-⚙️ **6. Step-by-step Wizards (Guide User):**
+⚙️ **7. Step-by-step Wizards (Guide User):**
 *   **Adjust Link:** Campaign Lab → Custom Links → New link → App: gesund.de → Fill Channel/Campaign → User destinations → In-app screen → Paste path → Review/Create.
 *   **Firebase Push:** Messaging → New campaign → Fill Title/Body → Add key/value: `href` (path), `navigation` (array), `linkLabel` (optional) → Send test.
 
-🧪 **7. Testing Checklist:**
+🧪 **8. Testing Checklist:**
 *   Latest app: Paste link in WhatsApp.
 *   Older version: Paste in Notes/Email.
 *   Not installed: Tap link → store → open → verify.
 *   QR: Min 2cm², error-correction M.
 *   Adjust Reset: Dashboard → Test Devices → remove device → relaunch.
 
-🛡 **8. Safeguards:**
+🛡 **9. Safeguards:**
 *   Always ask for missing mandatory params first. **DO NOT use placeholders or invent IDs.**
 *   If a required ID (e.g., product ID, pharmacy ID, category ID, campaign ID) is missing and the user doesn't know it, **YOU MUST** follow these steps:
     1.  Politely inform the user you need the specific ID.
@@ -71,19 +81,19 @@ Help the marketing & CRM team create fully-tested deep-link assets—Adjust link
         *   *You:* "Thanks! From that URL, it looks like the Category ID is `8536`. Is that correct?"
         *   *User:* "Yes."
         *   *You:* "Great! The deeplink path for that category is `gesund://pharmacy/category/8536`. Let's confirm the target screen..."
-*   Confirm the target screen with the user using `deeplink_targets.txt` reference text *before* generating the final output. Also confirm any significant parameters (like search terms or extracted/provided IDs).
+*   **Visual Confirmation:** When confirming the target screen (Step 5 in Convo Flow), first try to identify the corresponding screenshot in the `screenshots` directory using the path-to-filename convention. If found, include the `[SHOW_SCREENSHOT: <filename.png>]` marker at the start of your confirmation message. Then ask the user if the screenshot looks like the correct target screen, alongside the textual confirmation using `deeplink_targets.txt`.
 *   Warn if a requested path is not found in `linkingConfig.ts`.
 *   Mention Dynamic Links deprecation (Aug 25, 2025).
 *   Never auto-generate full Adjust links (needs tokens). Guide user through the Adjust UI steps instead.
 *   Use non-technical language.
 *   If genuinely stuck after trying the website URL method (e.g., user cannot find the URL, URL doesn't contain the ID, path invalid, user confirms extracted ID is wrong), *then* suggest contacting Patrick (dev) or Elisa(PO) via MS Teams and offer to draft the message for them.
 
-📣 **9. Conversation Flow:**
+📣 **10. Conversation Flow:**
 1.  Clarify the user's objective (Adjust link, QR, push?).
 2.  Identify the target screen/path in `linkingConfig.ts`.
 3.  Ask for any required parameters (like `:id`, `:searchTerm`).
 4.  If parameters are missing and the user doesn't know them, **initiate the www.gesund.de URL finding process** described in Safeguards.
-5.  **Confirm** the identified target screen and ALL necessary parameters (including extracted/confirmed IDs) with the user.
+5.  **Confirm** the identified target screen and ALL necessary parameters (including extracted/confirmed IDs) with the user. **Use visual confirmation** with `[SHOW_SCREENSHOT: <filename.png>]` marker and textual confirmation (`deeplink_targets.txt`) as the primary method here.
 6.  Generate the required deliverable (path, navigation array, Adjust short URL, checklist).
 7.  If applicable, walk the user step-by-step through the necessary UI actions (Adjust Campaign Lab, Firebase Console).
 8.  End with the testing checklist and placement advice.
@@ -789,7 +799,7 @@ function shoutMedicineActionImpl(params: URLSearchParams) {
     {
       sound: "default",
       pressAction: {
-        id: "medications",
+        id: "taken",
       },
       actions: [
         {
@@ -1154,21 +1164,54 @@ st.caption("Chat about deeplinks or analyze uploaded images. Context is maintain
 # Configure Gemini Model
 model = configure_gemini()
 
-# Display chat messages from history (now state only contains user/model turns)
+# Display chat messages from history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        for part in message["parts"]:
-            if isinstance(part, str):
-                st.markdown(part)
-            elif isinstance(part, Image.Image):
-                st.image(part, width=200)
-            else:
-                 # Attempt to display other types as strings
-                 try:
-                     st.markdown(str(part))
-                 except Exception:
-                     st.write("Non-displayable content part")
+        # Process parts for display (handle screenshots in model messages)
+        if message["role"] == "model":
+            text_to_display = ""
+            screenshot_path = None
+            # Ensure parts are strings before joining
+            string_parts = [str(p) for p in message["parts"] if isinstance(p, str)]
+            combined_parts = "".join(string_parts)
 
+            # Check for screenshot marker using regex
+            match = re.match(r"^\s*\[SHOW_SCREENSHOT:\s*(.*?)\s*\](.*)", combined_parts, re.DOTALL | re.IGNORECASE)
+            if match:
+                filename = match.group(1).strip()
+                text_to_display = match.group(2).strip()
+                potential_path = os.path.join(SCREENSHOT_DIR, filename)
+                if os.path.exists(potential_path):
+                    screenshot_path = potential_path
+                else:
+                    # Use Streamlit warning, not print, for visibility in app
+                    st.warning(f"Screenshot file not found: {potential_path}")
+            else:
+                text_to_display = combined_parts # No marker found, use original combined text
+
+            # Display screenshot if found
+            if screenshot_path:
+                try:
+                    st.image(screenshot_path, width=300) # Adjust width as needed
+                except Exception as e:
+                    st.warning(f"Could not display screenshot {screenshot_path}: {e}")
+
+            # Display the text part (even if screenshot wasn't found or failed)
+            if text_to_display:
+                 st.markdown(text_to_display)
+
+        else: # Handle user messages (and potentially other roles)
+            for part in message["parts"]:
+                if isinstance(part, str):
+                    st.markdown(part)
+                elif isinstance(part, Image.Image):
+                    st.image(part, width=200)
+                else:
+                    # Attempt to display other types as strings
+                    try:
+                        st.markdown(str(part))
+                    except Exception:
+                        st.write("Non-displayable content part")
 
 # React to user input using chat_input
 if prompt := st.chat_input("What deeplink or analysis do you need?"):
@@ -1247,22 +1290,22 @@ if prompt := st.chat_input("What deeplink or analysis do you need?"):
             # Send the combined instructions + history parts
             response = model.generate_content(api_payload) # Pass the flat list of parts
 
-            # Display assistant response
-            with st.chat_message("model"):
-                st.markdown(response.text)
+            # --- IMPORTANT: Store raw response text in state before potential modification ---
+            raw_response_text = response.text
+            st.session_state.messages.append({"role": "model", "parts": [raw_response_text]})
 
-            # Add assistant response to chat history (state)
-            st.session_state.messages.append({"role": "model", "parts": [response.text]})
+            # Display assistant response (will be handled by the loop above on rerun)
+            # The rerun will trigger the display logic which parses the screenshot marker
 
             # --- Clear the image from state only AFTER it's been processed ---
             if st.session_state.image_processed_this_turn:
                  st.session_state.current_image = None
                  st.session_state.image_processed_this_turn = False
-                 # No need to reset last_uploaded_file_id here, it prevents re-upload processing
-                 st.rerun() # Rerun to update sidebar display
+                 # No need to reset last_uploaded_file_id here
+                 st.rerun() # Rerun to update display including potential screenshot
+            else:
+                # If no image was processed, we still need to rerun to show the new message
+                st.rerun()
 
         except Exception as e:
             st.error(f"An error occurred calling Gemini: {e}")
-            # Optional: Remove the last user message from state if API call failed
-            if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-                 st.session_state.messages.pop()
