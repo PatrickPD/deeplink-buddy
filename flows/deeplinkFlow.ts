@@ -364,6 +364,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         }
                     } else if (flowState.step === 'path_identified') {
                         // *** START FIX for Premature Parameter Request ***
+                        console.log(`[Orchestrator] Entering 'path_identified' state. Path='${flowState.identifiedPathTemplate}', ScreenshotFile='${flowState.identifiedScreenshotFile}'`); // Log state
                         // When a path is identified, directly generate the confirmation message here
                         // instead of letting the LLM do it.
                         console.log(`[Orchestrator] Path identified (${flowState.identifiedPathTemplate}). Generating confirmation message directly.`);
@@ -378,6 +379,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         confirmationMsg += "Does this look right?";
 
                         forceResponse = confirmationMsg;
+                        console.log(`[Orchestrator] Forcing response in 'path_identified': "${forceResponse}"`); // Log forced response
                         flowState.step = 'screen_confirmation_pending'; // Move state to await user response
                         needsLlmCall = false; // Skip LLM call
                         // *** END FIX ***
@@ -412,6 +414,15 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                                 needsLlmCall = false; // Stay in this state
                             }
                         } else { needsLlmCall = true; flowState.step = 'error'; flowState.errorMessage = "State inconsistency: parameter_confirmation_pending"; }
+                    } else if (flowState.step === 'parameters_confirmed') {
+                        // *** Logic to request deliverable tool - This should be handled by LLM based on instructions ***
+                        console.log(`[Orchestrator] Step is 'parameters_confirmed'. Expecting LLM to request deliverableGeneratorTool.`);
+                        // No forced response or state change here; LLM should act.
+                        needsLlmCall = true;
+                    } else if (flowState.step === 'deliverable_generation_pending') {
+                        // Maybe force a message while waiting?
+                        forceResponse = "Okay, generating the deliverable now...";
+                        needsLlmCall = false; // Prevent LLM call while tool runs (assuming tool runs synchronously or flow waits)
                     } else if (flowState.step === 'deliverable_generated') {
                         const lowerInput = userText.toLowerCase(); // Use extracted userText
                         if (lowerInput.includes('yes') || lowerInput.includes('correct') || lowerInput.includes('ja') || lowerInput.includes('stimmt')) {
@@ -434,10 +445,22 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                             forceResponse = "Sorry, I didn't quite catch that. Does the deliverable I provided look correct? And do you need setup steps (if applicable)?";
                             needsLlmCall = false; // Stay in this state
                         }
+                    } else if (flowState.step === 'ui_guidance_pending') {
+                        // *** Logic to provide UI steps - This should be handled by LLM based on instructions ***
+                        console.log(`[Orchestrator] Step is 'ui_guidance_pending'. Expecting LLM to provide UI steps.`);
+                        // No forced response or state change here; LLM should act.
+                        needsLlmCall = true;
+                    } else if (flowState.step === 'ui_guided') {
+                        // *** Move to testing after guide - This transition seems okay ***
+                        flowState.step = 'testing_pending'; // Move to testing after UI guide
+                        console.log(`[Orchestrator] Moving to testing. Step: ${flowState.step}`);
+                        needsLlmCall = true; // Let LLM provide checklist
                     } else if (flowState.step === 'testing_pending') {
-                        // After showing checklist, wait for user confirmation to finish
-                        flowState.step = 'final_confirmation_pending';
-                        needsLlmCall = true; // Let LLM respond based on user input to the checklist prompt
+                        // *** Logic to provide checklist - This should be handled by LLM based on instructions ***
+                        console.log(`[Orchestrator] Step is 'testing_pending'. Expecting LLM to provide checklist.`);
+                        // No forced response, LLM provides checklist, then we expect final_confirmation_pending
+                        needsLlmCall = true;
+                        // State change to final_confirmation_pending happens *after* LLM provides checklist
                     } else if (flowState.step === 'final_confirmation_pending') {
                         const confirmation = userText.toLowerCase(); // Use extracted userText
                         if (confirmation.includes('yes') || confirmation.includes('done') || confirmation.includes('danke') || confirmation.includes('thanks') || confirmation.includes('ok')) {
@@ -521,10 +544,13 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         // Process tool results first
                         for (const response of toolResponses) {
                             historyUpdate.content.push({ toolResponse: response }); // Log tool response
+                            console.log(`[Orchestrator] Processing tool response: ${response.name}`, JSON.stringify(response.output)); // Log tool output
 
                             try {
                                 if (response.name === screenResolverTool.name && (flowState.step === 'objective_clarified')) {
-                                    const result = response.output as { path: string, screenshotFile?: string, requiredParams?: string[], alternativeMatches?: Array<{ path: string, screenshotFile?: string, description: string }> };
+                                    const result = response.output as { path: string, screenshotFile?: string | null, requiredParams?: string[], alternativeMatches?: Array<{ path: string, screenshotFile?: string, description: string }> }; // Ensure screenshotFile can be null
+                                    console.log(`[Orchestrator] ScreenResolverTool raw result:`, JSON.stringify(result)); // Log the parsed result
+
                                     if (result?.path) {
                                         // Check if this path was previously rejected
                                         const wasRejected = flowState.userScreenDescription?.includes(`rejected: ${result.path}`);
@@ -732,7 +758,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     // Potentially set error state
                 }
 
-                console.log(`[deeplinkHelperFlow] Turn End. Final Step: ${flowState.step}. Returning: ${agentResponseContent}`);
+                console.log(`[deeplinkHelperFlow] Turn End. Final Step: ${flowState.step}. Returning: "${agentResponseContent}"`); // Log final response
                 return agentResponseContent;
 
             } catch (error: any) {
