@@ -97,6 +97,7 @@ export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof 
 
             // Create image content items for the message
             const imageContents = [];
+            let userImageProvided = false; // Flag to know if user uploaded an image
 
             // Add user-provided screenshot if available
             if (input.uploadedScreenshot) {
@@ -105,6 +106,8 @@ export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof 
                         url: input.uploadedScreenshot
                     }
                 });
+                userImageProvided = true;
+                console.log("[screenResolverTool] Including user-uploaded screenshot in LLM call.");
             }
 
             // Add reference screenshots
@@ -122,19 +125,14 @@ export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof 
             // List all screenshots for reference, even if we don't send all as images
             const screenshotsList = allScreenshots.map(file => `- ${file}`).join('\n');
 
-            // Create a prompt that includes screenshots for the LLM to analyze
-            const response = await aiInstance.generate({
-                model: gemini25ProPreview0325,
-                messages: [
-                    {
-                        role: 'system',
-                        content: [
-                            {
-                                text: `You are a screen matching expert for a mobile app. Your task is to find the best matching screenshot and path based on the user's description.
+            // --- Refined System Prompt ---            
+            const systemPromptText = `You are a screen matching expert for a mobile app. Your task is to find the best matching screenshot filename from the provided library based on the user's request (description and potentially an uploaded image).
 
-I'm providing you with ${samplesToUse.length} sample screenshots from our app to help you understand the visual design and UI patterns.
+${userImageProvided ? "**IMPORTANT: The user has uploaded an image. First, visually compare the user's uploaded image (the first image in the list provided) against the reference library screenshots (subsequent images). If you find an identical or visually near-identical match in the library, you MUST select that library screenshot's filename as the BEST_MATCH.** Only if no strong visual match is found should you rely more heavily on the user's text description and general visual similarity." : "Analyze the user's description and the available library screenshots to find the best match."}
 
-Available screenshots (${allScreenshots.length} total):
+I'm providing you with ${samplesToUse.length} sample reference screenshots from our app library to help you.
+
+Available library screenshots (${allScreenshots.length} total):
 ${screenshotsList}
 
 Screenshot filenames follow these conventions:
@@ -142,14 +140,14 @@ Screenshot filenames follow these conventions:
 2. Special characters like ':', '?', '=', '@' are replaced with underscores
 3. Some screenshots may have descriptive names rather than exact paths
 
-Analyze the user's description and the available screenshots to:
-1. Identify the most likely matching screenshot
-2. Determine the corresponding deeplink path (convert underscores back to slashes where appropriate)
-3. Identify any required parameters (marked with ':' or '?' in the path)
-4. If there are multiple good matches, include them as alternatives
+Based on your analysis (prioritizing visual identity if user uploaded an image):
+1. Identify the most likely matching screenshot *filename from the library*.
+2. Determine the corresponding deeplink path (convert underscores back to slashes where appropriate for the path).
+3. Identify any required parameters (marked with ':' or '?' in the path).
+4. If there are multiple good matches, include them as alternatives.
 
-Your response should be in this format:
-BEST_MATCH: [screenshot filename]
+Your response MUST be in this format:
+BEST_MATCH: [library_screenshot_filename.png]
 PATH: [corresponding path]
 PARAMS: [list of parameters if any]
 ALTERNATIVES: [list other potential matches with brief descriptions]
@@ -161,9 +159,16 @@ PARAMS: []
 ALTERNATIVES:
 - profile_personal-info.png (profile/personal-info): User profile information screen
 - pharmacy_orders.png (pharmacy/orders): Orders from pharmacies
-`
-                            }
-                        ]
+`;
+            // --- End Refined System Prompt ---
+
+            // Create a prompt that includes screenshots for the LLM to analyze
+            const response = await aiInstance.generate({
+                model: gemini25ProPreview0325,
+                messages: [
+                    {
+                        role: 'system',
+                        content: [{ text: systemPromptText }] // Use the refined prompt
                     },
                     {
                         role: 'user',
