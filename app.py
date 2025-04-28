@@ -6,6 +6,7 @@ import io
 import json
 import re
 import requests # Import requests library
+import base64  # Add this for encoding images
 
 # --- Configuration ---
 PAGE_TITLE = "Deeplink Helper"
@@ -150,61 +151,70 @@ for message in st.session_state.messages:
 # React to user input using chat_input
 if prompt := st.chat_input("What deeplink or analysis do you need?"):
     # 1. Add user message to state immediately for display
-    # Store as a dictionary with role and content keys
     st.session_state.messages.append({"role": "user", "content": prompt})
-    # Don't display here, the loop above will handle it on rerun
-
-    # --- Image Handling (Simplified: Send note if image exists) ---
-    # Proper image sending requires multipart POST or uploading and sending URL
-    image_info = None
-    prompt_for_api = prompt # Use original prompt by default
+    
+    # 2. Prepare data for the Genkit API endpoint
+    # Check if we have an image to include
+    payload = None
+    
     if st.session_state.current_image:
-         # For now, just indicate an image was present.
-         # TODO: Implement actual image data sending to the Genkit API
-         image_info = "(Image was uploaded by user)"
-         prompt_for_api = f"{prompt} {image_info}"
-         # In a real implementation, prepare image data for the request
-         # e.g., convert to base64 or prepare multipart data.
-         st.session_state.current_image = None # Clear image after preparing (or after successful send)
+        # Convert image to base64
+        buf = io.BytesIO()
+        st.session_state.current_image.save(buf, format="PNG")
+        img_b64 = base64.b64encode(buf.getvalue()).decode()
+        
+        # Create payload with text and image
+        payload = {
+            "data": {
+                "text": prompt,
+                "uploadedImage": img_b64
+            }
+        }
+        
+        # Clear image after sending
+        st.session_state.current_image = None
+    else:
+        # No image, just send text
+        payload = {"data": prompt}
 
-
-    # 2. Prepare data and call the appropriate Genkit API endpoint
-    api_endpoint = f"{GENKIT_API_BASE_URL}/deeplinkHelperFlow" # Use the correct flow name
-    payload = {"data": prompt_for_api} # Use the expected 'data' key
+    api_endpoint = f"{GENKIT_API_BASE_URL}/deeplinkHelperFlow"
     headers = {'Content-Type': 'application/json'}
 
-    print(f"Calling Genkit API: {api_endpoint} with payload: {json.dumps(payload)}") # Debug log
+    print(f"Calling Genkit API: {api_endpoint}")
+    if isinstance(payload["data"], dict):
+        print(f"Sending text with uploaded image")
+    else:
+        print(f"Sending text only: {payload['data']}")
 
     # 3. Make the HTTP request
     model_response_content = None
     try:
         with st.spinner("Assistant is thinking..."):
-            response = requests.post(api_endpoint, headers=headers, json=payload, timeout=120) # Add timeout
-            response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+            response = requests.post(
+                api_endpoint, 
+                headers=headers, 
+                json=payload, 
+                timeout=120
+            )
+            response.raise_for_status()
 
             response_data = response.json()
-            print(f"API Response Data: {json.dumps(response_data)}") # Debug using json.dumps
+            print(f"API Response status: {response.status_code}")
 
-            # --- UPDATED: Expect response under 'result' key ---
-            # Expecting {"result": "..."}
-            # if "flowId" in response_data:
-            #     st.session_state.flow_id = response_data["flowId"] # Update flow ID (No longer needed)
             if "result" in response_data:
                 model_response_content = response_data["result"]
             else:
-                 st.error("API response missing 'result' field.")
-                 model_response_content = "Error: Received unexpected data from the assistant."
+                st.error("API response missing 'result' field.")
+                model_response_content = "Error: Received unexpected data from the assistant."
 
     except requests.exceptions.RequestException as e:
         st.error(f"Network or API error: {e}")
-        # Add error message to chat
         model_response_content = f"Sorry, I couldn't connect to the assistant. Please check the API connection. Error: {e}"
     except json.JSONDecodeError:
         st.error(f"API returned non-JSON response: {response.text}")
         model_response_content = f"Sorry, the assistant returned an invalid response."
     except Exception as e:
         st.error(f"An error occurred: {e}")
-         # Add error message to chat
         model_response_content = f"Sorry, an unexpected error occurred: {e}"
 
     # 4. Add model response (or error message) to state

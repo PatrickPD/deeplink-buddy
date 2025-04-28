@@ -46,6 +46,24 @@ function getAllScreenshots(): string[] {
     }
 }
 
+/**
+ * Reads a screenshot file and converts it to base64
+ */
+function getScreenshotBase64(filename: string): string | null {
+    try {
+        const fullPath = path.resolve(path.join(SCREENSHOT_DIR, filename));
+        if (!fs.existsSync(fullPath)) {
+            console.warn(`Screenshot file not found: ${fullPath}`);
+            return null;
+        }
+        const data = fs.readFileSync(fullPath);
+        return `data:image/png;base64,${data.toString('base64')}`;
+    } catch (error: any) {
+        console.error(`[screenResolverTool] Error reading screenshot file: ${error.message}`);
+        return null;
+    }
+}
+
 export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof ScreenResolverInputSchema, typeof ScreenResolverOutputSchema> {
     return aiInstance.defineTool(
         {
@@ -67,6 +85,42 @@ export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof 
                 };
             }
 
+            // Load the images to send to the model - limit to a reasonable number to avoid token limits
+            // For production, consider implementing a more sophisticated selection approach
+            const MAX_IMAGES = 8; // Adjust based on your needs and model capabilities
+
+            // Filter screenshots to a manageable number
+            // In a production system, you'd use a more sophisticated selection strategy
+            // For now, we'll just take a sample of screenshots to demonstrate the concept
+            const samplesToUse = allScreenshots.slice(0, MAX_IMAGES);
+
+            // Create image content items for the message
+            const imageContents = [];
+
+            // Add user-provided screenshot if available
+            if (input.uploadedScreenshot) {
+                imageContents.push({
+                    image_url: {
+                        url: input.uploadedScreenshot
+                    }
+                });
+            }
+
+            // Add reference screenshots
+            for (const screenshot of samplesToUse) {
+                const base64Data = getScreenshotBase64(screenshot);
+                if (base64Data) {
+                    imageContents.push({
+                        image_url: {
+                            url: base64Data
+                        }
+                    });
+                }
+            }
+
+            // List all screenshots for reference, even if we don't send all as images
+            const screenshotsList = allScreenshots.map(file => `- ${file}`).join('\n');
+
             // Create a prompt that includes screenshots for the LLM to analyze
             const response = await aiInstance.generate({
                 messages: [
@@ -76,8 +130,10 @@ export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof 
                             {
                                 text: `You are a screen matching expert for a mobile app. Your task is to find the best matching screenshot and path based on the user's description.
 
-Available screenshots (${allScreenshots.length}):
-${allScreenshots.map(file => `- ${file}`).join('\n')}
+I'm providing you with ${samplesToUse.length} sample screenshots from our app to help you understand the visual design and UI patterns.
+
+Available screenshots (${allScreenshots.length} total):
+${screenshotsList}
 
 Screenshot filenames follow these conventions:
 1. Path segments are separated by underscores (e.g., "profile_orders.png" for "profile/orders")
@@ -112,7 +168,8 @@ ALTERNATIVES:
                         content: [
                             {
                                 text: `User description: "${input.description}"`
-                            }
+                            },
+                            ...imageContents
                         ]
                     }
                 ]
