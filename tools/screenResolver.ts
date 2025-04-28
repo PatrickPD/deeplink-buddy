@@ -1,3 +1,4 @@
+import { gemini10Pro } from '@genkit-ai/vertexai';
 import * as fs from 'fs';
 import { Genkit } from 'genkit';
 import { ToolAction } from 'genkit/tool';
@@ -123,6 +124,7 @@ export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof 
 
             // Create a prompt that includes screenshots for the LLM to analyze
             const response = await aiInstance.generate({
+                model: gemini10Pro,
                 messages: [
                     {
                         role: 'system',

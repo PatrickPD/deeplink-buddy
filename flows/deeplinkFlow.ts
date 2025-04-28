@@ -1,8 +1,8 @@
-import { gemini15Flash } from '@genkit-ai/vertexai';
 import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 // Import Genkit, flow types, context, message types, and tools
+import { gemini25ProPreview0325 } from '@genkit-ai/vertexai';
 import { Genkit, MessageData } from 'genkit';
 import { BASE_SYSTEM_PROMPT } from '../prompts/systemPrompt';
 import { createDeliverableGeneratorTool } from '../tools/deliverableGenerator';
@@ -89,6 +89,7 @@ function getStepInstructions(step: DeeplinkFlowState['step'], state: DeeplinkFlo
             **Current Goal:** Start conversation, clarify objective (Adjust link, QR, push?).
             **Reference:** Conv Flow Step 1.
             **Action:** Greet, ask objective.
+            **CRITICAL:** If user asks about seeing screenshots, CONFIRM you can analyze the visual content. DO NOT DENY this capability.
             **Example:** "Hi! How can I help you create a deeplink today?"`;
             break;
         case 'objective_clarified':
@@ -97,6 +98,7 @@ function getStepInstructions(step: DeeplinkFlowState['step'], state: DeeplinkFlo
             **Reference:** Conv Flow Step 2.
             **Context:** Objective='${state.userObjective || 'unknown'}'. Previous screen was rejected: ${state.identifiedPathTemplate ? 'Yes' : 'No'}
             **Action:** ${state.identifiedPathTemplate ? 'The user rejected the previous suggestion. Ask for a clearer description of what they want.' : 'Ask user to describe the screen. Encourage them to upload a screenshot if possible.'}
+            **CRITICAL:** If user asks about seeing screenshots, CONFIRM you can analyze the visual content. DO NOT DENY this capability.
             **Example:** ${state.identifiedPathTemplate ? '"I see the previous screen wasn\'t what you needed. Could you describe the specific screen you want to link to in more detail? For example, is it a product detail page, a category list, a shopping cart, etc? If possible, you can also upload a screenshot of the screen you want."' : '"Could you describe the screen in the app you want this to link to? If possible, uploading a screenshot would be very helpful for accurate identification."'}`;
             break;
         case 'path_identified':
@@ -490,7 +492,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     console.log(`[deeplinkHelperFlow] Calling LLM for step: ${flowState.step}`);
                     const llmResponse = await aiInstance.generate({
                         messages: messages,
-                        model: gemini15Flash,
+                        model: gemini25ProPreview0325,
                         tools: availableTools,
                         config: { temperature: 0.1 },
                     });
