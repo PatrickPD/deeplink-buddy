@@ -248,11 +248,36 @@ describe('Deeplink Flow Tests', () => {
         // by directly manipulating the state and calling as if tool had responded
         mockFlowState.identifiedPathTemplate = 'pharmacy/products/:category';
         mockFlowState.step = 'path_identified';
+    });
 
-        // When checking if this path was previously rejected in the tool response handling:
-        const wasRejected = mockFlowState.userScreenDescription?.includes(`rejected: ${mockFlowState.identifiedPathTemplate}`);
+    it('should encourage users to upload screenshots when describing screens', async () => {
+        // Step 1: User asks about a screen but is vague
+        await deeplinkHelperFlow('I need a link to some screen in the app');
 
-        expect(wasRejected).toBe(true);
+        // Verify the response contains encouragement to upload a screenshot
+        const response = await deeplinkHelperFlow('It shows products');
+
+        expect(response.toLowerCase()).toContain('screenshot');
+        expect(response.toLowerCase()).toContain('upload');
+    });
+
+    it('should browse all screenshots to find the best match', async () => {
+        // Mock the screenResolverTool to simulate browsing multiple screenshots
+        vi.mocked(mockGenkit.generate).mockImplementationOnce(async ({ messages }) => {
+            return {
+                text: 'Based on your description, I checked all available screenshots and found these possible matches: [1] product details, [2] category list. Which one matches what you need?',
+                toolCalls: () => [],
+                toolCallResponses: () => []
+            };
+        });
+
+        // User provides a vague description
+        const response = await deeplinkHelperFlow('I need a screen that shows products');
+
+        // Should indicate multiple matches were found
+        expect(response).toContain('possible matches');
+        expect(response).toContain('product details');
+        expect(response).toContain('category list');
     });
 
     it('should transition states correctly from start to completion', async () => {

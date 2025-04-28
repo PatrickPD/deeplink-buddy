@@ -83,8 +83,8 @@ function getStepInstructions(step: DeeplinkFlowState['step'], state: DeeplinkFlo
             **Current Goal:** Get screen description.
             **Reference:** Conv Flow Step 2.
             **Context:** Objective='${state.userObjective || 'unknown'}'. Previous screen was rejected: ${state.identifiedPathTemplate ? 'Yes' : 'No'}
-            **Action:** ${state.identifiedPathTemplate ? 'The user rejected the previous suggestion. Ask for a clearer description of what they want.' : 'Ask user to describe the screen.'}
-            **Example:** ${state.identifiedPathTemplate ? '"I see the previous screen wasn\'t what you needed. Could you describe the specific screen you want to link to in more detail? For example, is it a product detail page, a category list, a shopping cart, etc?"' : '"Could you describe the screen in the app you want this to link to?"'}`;
+            **Action:** ${state.identifiedPathTemplate ? 'The user rejected the previous suggestion. Ask for a clearer description of what they want.' : 'Ask user to describe the screen. Encourage them to upload a screenshot if possible.'}
+            **Example:** ${state.identifiedPathTemplate ? '"I see the previous screen wasn\'t what you needed. Could you describe the specific screen you want to link to in more detail? For example, is it a product detail page, a category list, a shopping cart, etc? If possible, you can also upload a screenshot of the screen you want."' : '"Could you describe the screen in the app you want this to link to? If possible, uploading a screenshot would be very helpful for accurate identification."'}`;
             break;
         case 'path_identified':
             relevantInstructions = `
@@ -216,6 +216,9 @@ ${fullInstructions}
 **Current Task Focus (Follow ONLY these instructions for this turn):**
 ${relevantInstructions}
 
+**Important Note for Screenshot Upload:**
+If the user mentions they can't upload a screenshot or is having issues with uploads, acknowledge the problem and ask them to provide a very detailed description of the screen instead. Let them know that without a screenshot, a detailed description is essential for accurate identification.
+
 **History:**
 ${state.history.slice(-5).map(m => `${m.role}: ${m.content[0]?.text || '[Tool Result]'}`).join('\n')}
 
@@ -245,6 +248,17 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
         return 'unknown';
     };
 
+    // Check if the user is mentioning upload issues
+    const detectUploadIssues = (text: string): boolean => {
+        const lowerText = text.toLowerCase();
+        return lowerText.includes('can\'t upload') ||
+            lowerText.includes('cannot upload') ||
+            lowerText.includes('upload not working') ||
+            lowerText.includes('upload issue') ||
+            lowerText.includes('upload problem') ||
+            (lowerText.includes('upload') && lowerText.includes('not') && lowerText.includes('work'));
+    };
+
     return aiInstance.defineFlow<string, string, DeeplinkFlowState>(
         {
             name: 'deeplinkHelperFlow',
@@ -255,6 +269,12 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
         async (userInput: string, state: DeeplinkFlowState, context: ActionContext): Promise<string> => {
             console.log(`[deeplinkHelperFlow] Turn Start. Input: "${userInput}", Current Step: ${state.step}`);
             state.history.push({ role: 'user', content: [{ text: userInput }] });
+
+            // Check for upload issues and add to state context if detected
+            if (detectUploadIssues(userInput)) {
+                console.log(`[deeplinkHelperFlow] Upload issues detected in user input`);
+                // We'll handle this in the instructions for the LLM
+            }
 
             let agentResponseContent = "";
             let loopDetection = 0; // Prevent infinite loops
