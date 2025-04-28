@@ -269,16 +269,19 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
             inputSchema: FlowInputSchema,
             outputSchema: FlowOutputSchema,
         },
-        async (userInput: string, state: DeeplinkFlowState): Promise<string> => {
+        async (userInput: string, state: any, context?: any): Promise<string> => {
+            // Cast the state to our internal type
+            const flowState = state as DeeplinkFlowState;
+
             // Initialize state if this is the first turn
-            if (!state.history) {
-                state.step = 'start';
-                state.history = [];
-                state.extractedParams = {};
+            if (!flowState.history) {
+                flowState.step = 'start';
+                flowState.history = [];
+                flowState.extractedParams = {};
             }
 
-            console.log(`[deeplinkHelperFlow] Turn Start. Input: "${userInput}", Current Step: ${state.step}`);
-            state.history.push({ role: 'user', content: [{ text: userInput }] });
+            console.log(`[deeplinkHelperFlow] Turn Start. Input: "${userInput}", Current Step: ${flowState.step}`);
+            flowState.history.push({ role: 'user', content: [{ text: userInput }] });
 
             // Check for upload issues and add to state context if detected
             if (detectUploadIssues(userInput)) {
@@ -296,10 +299,10 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     let needsLlmCall = true;
                     let forceResponse = ""; // Use this to force a response without LLM call
 
-                    console.log(`[Orchestrator] Loop ${loopDetection}, Current Step: ${state.step}`);
+                    console.log(`[Orchestrator] Loop ${loopDetection}, Current Step: ${flowState.step}`);
 
                     // === Pre-LLM State Checks & Transitions ===
-                    if (state.step === 'screen_confirmation_pending') {
+                    if (flowState.step === 'screen_confirmation_pending') {
                         const confirmation = userInput.toLowerCase();
                         const explicitNo = confirmation.includes('no') || confirmation.includes('wrong') ||
                             confirmation.includes('nein') || confirmation.includes('falsch') ||
@@ -315,22 +318,22 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         if (confirmation.includes('yes') || confirmation.includes('correct') || confirmation.includes('ja') || confirmation.includes('stimmt')) {
                             // ONLY if explicitly confirmed, proceed to parameter extraction or completion
                             console.log(`[Orchestrator] Screen EXPLICITLY confirmed. Moving to parameter extraction.`);
-                            state.parameterToExtract = findNextMissingParam(state);
-                            state.step = state.parameterToExtract ? 'parameter_extraction_pending' : 'parameters_confirmed';
+                            flowState.parameterToExtract = findNextMissingParam(flowState);
+                            flowState.step = flowState.parameterToExtract ? 'parameter_extraction_pending' : 'parameters_confirmed';
                             needsLlmCall = true; // Need LLM to ask for param or confirm completion
                         } else if (explicitNo || implicitNo) {
                             // If rejected (explicitly or implicitly), clear the current path and go back to asking for description
                             console.log(`[Orchestrator] Screen rejected (${explicitNo ? 'explicitly' : 'implicitly'}). Moving back to objective_clarified.`);
                             // Store the rejected path temporarily (to know we need a different one)
-                            const rejectedPath = state.identifiedPathTemplate;
+                            const rejectedPath = flowState.identifiedPathTemplate;
 
                             // Clear the current identification but keep track of it being rejected
-                            state.step = 'objective_clarified';
-                            state.identifiedPathTemplate = undefined;
-                            state.identifiedScreenshotFile = undefined;
-                            state.requiredParams = undefined;
-                            state.extractedParams = {};
-                            state.userScreenDescription = `${state.userScreenDescription || ''} (rejected: ${rejectedPath})`;
+                            flowState.step = 'objective_clarified';
+                            flowState.identifiedPathTemplate = undefined;
+                            flowState.identifiedScreenshotFile = undefined;
+                            flowState.requiredParams = undefined;
+                            flowState.extractedParams = {};
+                            flowState.userScreenDescription = `${flowState.userScreenDescription || ''} (rejected: ${rejectedPath})`;
 
                             forceResponse = "I understand that's not the right screen. Let's try again. Could you describe the specific screen you want to link to in more detail?";
                             needsLlmCall = false;
@@ -339,57 +342,57 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                             forceResponse = "I'm not sure if that's a yes or no. Does the screen I showed/described match what you want? Please answer with 'yes' or 'no'.";
                             needsLlmCall = false; // Stay in this state, just repeat the question
                         }
-                    } else if (state.step === 'path_identified') {
+                    } else if (flowState.step === 'path_identified') {
                         // After a path has been identified, we need to move to confirmation step
                         // before showing the confirmation message
-                        state.step = 'screen_confirmation_pending';
+                        flowState.step = 'screen_confirmation_pending';
                         console.log(`[Orchestrator] Path identified. Moving to screen_confirmation_pending.`);
                         needsLlmCall = true; // Still need LLM to generate confirmation message
-                    } else if (state.step === 'parameter_extraction_pending') {
-                        if (userInput.toLowerCase().startsWith('http') && state.parameterToExtract) {
-                            console.log(`[Orchestrator] User provided URL for ${state.parameterToExtract}. Moving to url_request_pending.`);
-                            state.step = 'url_request_pending';
+                    } else if (flowState.step === 'parameter_extraction_pending') {
+                        if (userInput.toLowerCase().startsWith('http') && flowState.parameterToExtract) {
+                            console.log(`[Orchestrator] User provided URL for ${flowState.parameterToExtract}. Moving to url_request_pending.`);
+                            flowState.step = 'url_request_pending';
                             needsLlmCall = true; // Need LLM to request tool call
                         }
                         // Otherwise, let LLM process the provided value (or lack thereof)
-                    } else if (state.step === 'parameter_confirmation_pending') {
+                    } else if (flowState.step === 'parameter_confirmation_pending') {
                         const confirmation = userInput.toLowerCase();
-                        const paramInfo = state.parameterConfirmationPending;
+                        const paramInfo = flowState.parameterConfirmationPending;
                         if (paramInfo) {
                             if (confirmation.includes('yes') || confirmation.includes('correct') || confirmation.includes('ja') || confirmation.includes('stimmt')) {
-                                state.extractedParams = state.extractedParams || {};
-                                state.extractedParams[paramInfo.paramName] = paramInfo.extractedValue;
-                                state.parameterConfirmationPending = null;
-                                state.parameterToExtract = findNextMissingParam(state);
-                                state.step = state.parameterToExtract ? 'parameter_extraction_pending' : 'parameters_confirmed';
-                                console.log(`[Orchestrator] Param ${paramInfo.paramName} confirmed. Next Param: ${state.parameterToExtract}. Moving to step: ${state.step}`);
+                                flowState.extractedParams = flowState.extractedParams || {};
+                                flowState.extractedParams[paramInfo.paramName] = paramInfo.extractedValue;
+                                flowState.parameterConfirmationPending = null;
+                                flowState.parameterToExtract = findNextMissingParam(flowState);
+                                flowState.step = flowState.parameterToExtract ? 'parameter_extraction_pending' : 'parameters_confirmed';
+                                console.log(`[Orchestrator] Param ${paramInfo.paramName} confirmed. Next Param: ${flowState.parameterToExtract}. Moving to step: ${flowState.step}`);
                                 needsLlmCall = true; // Need LLM for next step
                             } else if (confirmation.includes('no') || confirmation.includes('wrong') || confirmation.includes('nein') || confirmation.includes('falsch')) {
-                                state.parameterConfirmationPending = null;
-                                state.parameterToExtract = paramInfo.paramName; // Reset to ask again
-                                state.step = 'parameter_extraction_pending';
-                                console.log(`[Orchestrator] Param ${paramInfo.paramName} denied. Moving back to step: ${state.step}`);
+                                flowState.parameterConfirmationPending = null;
+                                flowState.parameterToExtract = paramInfo.paramName; // Reset to ask again
+                                flowState.step = 'parameter_extraction_pending';
+                                console.log(`[Orchestrator] Param ${paramInfo.paramName} denied. Moving back to step: ${flowState.step}`);
                                 forceResponse = `Okay, that extracted value wasn't correct. Could you please provide the correct ${getUserFriendlyParamName(paramInfo.paramName)}? Or paste the URL again.`;
                                 needsLlmCall = false;
                             } else {
                                 forceResponse = `Sorry, I need a clear 'yes' or 'no' to confirm if the extracted value '${paramInfo.extractedValue}' for ${paramInfo.paramName} is correct.`;
                                 needsLlmCall = false; // Stay in this state
                             }
-                        } else { needsLlmCall = true; state.step = 'error'; state.errorMessage = "State inconsistency: parameter_confirmation_pending"; }
-                    } else if (state.step === 'deliverable_generated') {
+                        } else { needsLlmCall = true; flowState.step = 'error'; flowState.errorMessage = "State inconsistency: parameter_confirmation_pending"; }
+                    } else if (flowState.step === 'deliverable_generated') {
                         const lowerInput = userInput.toLowerCase();
                         if (lowerInput.includes('yes') || lowerInput.includes('correct') || lowerInput.includes('ja') || lowerInput.includes('stimmt')) {
-                            if ((state.deliverableType === 'adjust_link' || state.deliverableType === 'push_payload') && (lowerInput.includes('setup') || lowerInput.includes('steps') || lowerInput.includes('adjust') || lowerInput.includes('firebase'))) {
-                                state.step = 'ui_guidance_pending';
-                                console.log(`[Orchestrator] Deliverable confirmed, UI steps requested. Moving to step: ${state.step}`);
+                            if ((flowState.deliverableType === 'adjust_link' || flowState.deliverableType === 'push_payload') && (lowerInput.includes('setup') || lowerInput.includes('steps') || lowerInput.includes('adjust') || lowerInput.includes('firebase'))) {
+                                flowState.step = 'ui_guidance_pending';
+                                console.log(`[Orchestrator] Deliverable confirmed, UI steps requested. Moving to step: ${flowState.step}`);
                             } else {
-                                state.step = 'testing_pending';
-                                console.log(`[Orchestrator] Deliverable confirmed, moving to testing. Step: ${state.step}`);
+                                flowState.step = 'testing_pending';
+                                console.log(`[Orchestrator] Deliverable confirmed, moving to testing. Step: ${flowState.step}`);
                             }
                             needsLlmCall = true;
                         } else if (lowerInput.includes('no') || lowerInput.includes('wrong') || lowerInput.includes('falsch')) {
                             // Ask what was wrong or restart?
-                            state.step = 'objective_clarified'; // Simple restart for now
+                            flowState.step = 'objective_clarified'; // Simple restart for now
                             forceResponse = "Okay, it seems the deliverable wasn't right. Let's start over. What screen are you trying to link to?";
                             needsLlmCall = false;
                         } else {
@@ -397,20 +400,20 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                             forceResponse = "Sorry, I didn't quite catch that. Does the deliverable I provided look correct? And do you need setup steps (if applicable)?";
                             needsLlmCall = false; // Stay in this state
                         }
-                    } else if (state.step === 'testing_pending') {
+                    } else if (flowState.step === 'testing_pending') {
                         // After showing checklist, wait for user confirmation to finish
-                        state.step = 'final_confirmation_pending';
+                        flowState.step = 'final_confirmation_pending';
                         needsLlmCall = true; // Let LLM respond based on user input to the checklist prompt
-                    } else if (state.step === 'final_confirmation_pending') {
+                    } else if (flowState.step === 'final_confirmation_pending') {
                         const confirmation = userInput.toLowerCase();
                         if (confirmation.includes('yes') || confirmation.includes('done') || confirmation.includes('danke') || confirmation.includes('thanks') || confirmation.includes('ok')) {
-                            state.step = 'complete';
-                            console.log(`[Orchestrator] Final confirmation received. Moving to step: ${state.step}`);
+                            flowState.step = 'complete';
+                            console.log(`[Orchestrator] Final confirmation received. Moving to step: ${flowState.step}`);
                             needsLlmCall = true; // Let LLM give closing message
                         } else {
                             // Assume user has another question/request
-                            state.step = 'start'; // Reset to handle new request
-                            console.log(`[Orchestrator] User has further input after checklist. Resetting to step: ${state.step}`);
+                            flowState.step = 'start'; // Reset to handle new request
+                            console.log(`[Orchestrator] User has further input after checklist. Resetting to step: ${flowState.step}`);
                             // Let the loop re-run with the new input in the 'start' state
                             continue; // Re-run loop immediately for the new request
                         }
@@ -425,23 +428,23 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     // === Get Instructions & Call LLM (if needed) ===
                     if (!needsLlmCall) {
                         // This state transition doesn't require an LLM call, loop might continue or break
-                        console.log(`[Orchestrator] Skipping LLM call for step: ${state.step}`);
+                        console.log(`[Orchestrator] Skipping LLM call for step: ${flowState.step}`);
                         // If the state didn't change to something needing LLM, we might be stuck - should ideally not happen with good logic
                         // For safety, break if we skip LLM without forcing a response (implies an issue or end of turn)
                         if (!forceResponse) break; // Should already be handled, but for safety
                         continue; // Re-evaluate the new state in the loop
                     }
 
-                    const stepInstructions = getStepInstructions(state.step, state);
+                    const stepInstructions = getStepInstructions(flowState.step, flowState);
                     if (stepInstructions.startsWith("Error:")) throw new Error(stepInstructions);
 
                     const messages: MessageData[] = [
                         { role: 'system', content: [{ text: stepInstructions }] },
-                        ...state.history.slice(-10),
+                        ...flowState.history.slice(-10),
                     ];
                     const availableTools = [screenResolverTool, parameterExtractorTool, deliverableGeneratorTool];
 
-                    console.log(`[deeplinkHelperFlow] Calling LLM for step: ${state.step}`);
+                    console.log(`[deeplinkHelperFlow] Calling LLM for step: ${flowState.step}`);
                     const llmResponse = await aiInstance.generate({
                         messages: messages,
                         model: gemini15Flash,
@@ -461,7 +464,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         (typeof llmResponse.toolCallResponses === 'function' ? llmResponse.toolCallResponses() : llmResponse.toolCallResponses) || []
                         : [];
 
-                    console.log(`[deeplinkHelperFlow] LLM raw response for step ${state.step}:`, agentResponseContent);
+                    console.log(`[deeplinkHelperFlow] LLM raw response for step ${flowState.step}:`, agentResponseContent);
                     if (toolCalls.length > 0) console.log(`[deeplinkHelperFlow] LLM requested tool calls:`, toolCalls);
                     if (toolResponses.length > 0) console.log(`[deeplinkHelperFlow] Tool responses:`, toolResponses);
 
@@ -476,11 +479,11 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                             historyUpdate.content.push({ toolResponse: response }); // Log tool response
 
                             try {
-                                if (response.name === screenResolverTool.name && (state.step === 'objective_clarified' || state.step === 'path_identified')) {
+                                if (response.name === screenResolverTool.name && (flowState.step === 'objective_clarified' || flowState.step === 'path_identified')) {
                                     const result = response.output as { path: string, screenshotFile?: string, requiredParams?: string[], alternativeMatches?: Array<{ path: string, screenshotFile?: string, description: string }> };
                                     if (result?.path) {
                                         // Check if this path was previously rejected
-                                        const wasRejected = state.userScreenDescription?.includes(`rejected: ${result.path}`);
+                                        const wasRejected = flowState.userScreenDescription?.includes(`rejected: ${result.path}`);
                                         if (wasRejected) {
                                             console.log(`[Orchestrator] Warning: ScreenResolverTool returned a previously rejected path: ${result.path}`);
 
@@ -488,16 +491,16 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                                             if (result.alternativeMatches && result.alternativeMatches.length > 0) {
                                                 // Find the first alternative that wasn't rejected
                                                 const validAlternative = result.alternativeMatches.find(alt =>
-                                                    !state.userScreenDescription?.includes(`rejected: ${alt.path}`)
+                                                    !flowState.userScreenDescription?.includes(`rejected: ${alt.path}`)
                                                 );
 
                                                 if (validAlternative) {
                                                     console.log(`[Orchestrator] Using alternative path: ${validAlternative.path} instead of rejected path`);
-                                                    state.identifiedPathTemplate = validAlternative.path;
-                                                    state.identifiedScreenshotFile = validAlternative.screenshotFile || null;
-                                                    state.requiredParams = validAlternative.path.match(/:[a-zA-Z0-9-_]+\??/g) || [];
-                                                    state.extractedParams = {}; // Reset params when path changes
-                                                    state.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
+                                                    flowState.identifiedPathTemplate = validAlternative.path;
+                                                    flowState.identifiedScreenshotFile = validAlternative.screenshotFile || null;
+                                                    flowState.requiredParams = validAlternative.path.match(/:[a-zA-Z0-9-_]+\??/g) || [];
+                                                    flowState.extractedParams = {}; // Reset params when path changes
+                                                    flowState.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
                                                     needsLlmCall = true;
                                                     continue; // Restart loop to get confirmation instructions
                                                 }
@@ -521,7 +524,7 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                                             agentResponseContent = `Based on your description, I found these potential matches from our screenshot library:\n\n${options.join('\n')}\n\nWhich one best matches what you're looking for? You can select by number or description.`;
 
                                             // Store the matches for later reference
-                                            state.potentialMatches = [
+                                            flowState.potentialMatches = [
                                                 { path: result.path, screenshotFile: result.screenshotFile || undefined, requiredParams: result.requiredParams || [] },
                                                 ...result.alternativeMatches.map(alt => ({
                                                     path: alt.path,
@@ -534,37 +537,37 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                                             break; // Don't process other tools
                                         }
                                         // If the user is responding to a multiple choice selection
-                                        else if (state.potentialMatches && state.potentialMatches.length > 0 && userInput.match(/\b(option|choice|alternative|#|number)?\s*(\d+|\w+)\b/i)) {
+                                        else if (flowState.potentialMatches && flowState.potentialMatches.length > 0 && userInput.match(/\b(option|choice|alternative|#|number)?\s*(\d+|\w+)\b/i)) {
                                             const choiceMatch = userInput.match(/\b(option|choice|alternative|#|number)?\s*(\d+|\w+)\b/i);
                                             let selectedIndex = 0; // Default to main match
 
                                             if (choiceMatch && choiceMatch[2]) {
                                                 // Try to parse selected option number
                                                 const optionNumber = parseInt(choiceMatch[2]);
-                                                if (!isNaN(optionNumber) && optionNumber > 0 && optionNumber <= state.potentialMatches.length - 1) {
+                                                if (!isNaN(optionNumber) && optionNumber > 0 && optionNumber <= flowState.potentialMatches.length - 1) {
                                                     selectedIndex = optionNumber;
                                                 }
                                             }
 
-                                            const selectedMatch = state.potentialMatches[selectedIndex];
-                                            state.identifiedPathTemplate = selectedMatch.path;
-                                            state.identifiedScreenshotFile = selectedMatch.screenshotFile;
-                                            state.requiredParams = selectedMatch.requiredParams;
-                                            state.extractedParams = {}; // Reset params when path changes
-                                            state.potentialMatches = undefined; // Clear potential matches
-                                            state.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
+                                            const selectedMatch = flowState.potentialMatches[selectedIndex];
+                                            flowState.identifiedPathTemplate = selectedMatch.path;
+                                            flowState.identifiedScreenshotFile = selectedMatch.screenshotFile;
+                                            flowState.requiredParams = selectedMatch.requiredParams;
+                                            flowState.extractedParams = {}; // Reset params when path changes
+                                            flowState.potentialMatches = undefined; // Clear potential matches
+                                            flowState.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
                                             console.log(`[Orchestrator] User selected match ${selectedIndex}: ${selectedMatch.path}`);
                                             needsLlmCall = true;
                                             continue; // Restart loop to get confirmation instructions
                                         }
                                         // Normal single match flow
                                         else {
-                                            state.identifiedPathTemplate = result.path;
-                                            state.identifiedScreenshotFile = result.screenshotFile || null;
-                                            state.requiredParams = result.requiredParams || [];
-                                            state.extractedParams = {}; // Reset params when path changes
-                                            state.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
-                                            console.log(`[Orchestrator] ScreenResolverTool success. Path: ${result.path}, Screenshot: ${result.screenshotFile}. Moving to step: ${state.step}`);
+                                            flowState.identifiedPathTemplate = result.path;
+                                            flowState.identifiedScreenshotFile = result.screenshotFile || null;
+                                            flowState.requiredParams = result.requiredParams || [];
+                                            flowState.extractedParams = {}; // Reset params when path changes
+                                            flowState.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
+                                            console.log(`[Orchestrator] ScreenResolverTool success. Path: ${result.path}, Screenshot: ${result.screenshotFile}. Moving to step: ${flowState.step}`);
                                             needsLlmCall = true; // Need LLM to generate confirmation msg now
                                             continue; // Restart loop to get confirmation instructions
                                         }
@@ -572,32 +575,32 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                                         agentResponseContent = "I couldn't identify a specific screen from that description. Could you try describing it differently or mentioning a key feature? Uploading a screenshot would also help.";
                                         needsLlmCall = false; // Don't call LLM again this turn
                                     }
-                                } else if (response.name === parameterExtractorTool.name && state.step === 'url_request_pending' && state.parameterToExtract) {
+                                } else if (response.name === parameterExtractorTool.name && flowState.step === 'url_request_pending' && flowState.parameterToExtract) {
                                     const result = response.output as { extractedValue: string | null };
                                     if (result?.extractedValue) {
-                                        state.parameterConfirmationPending = { paramName: state.parameterToExtract, extractedValue: result.extractedValue };
-                                        state.step = 'parameter_confirmation_pending';
-                                        console.log(`[Orchestrator] ParameterExtractorTool success. Extracted ${result.extractedValue} for ${state.parameterToExtract}. Moving to step: ${state.step}`);
+                                        flowState.parameterConfirmationPending = { paramName: flowState.parameterToExtract, extractedValue: result.extractedValue };
+                                        flowState.step = 'parameter_confirmation_pending';
+                                        console.log(`[Orchestrator] ParameterExtractorTool success. Extracted ${result.extractedValue} for ${flowState.parameterToExtract}. Moving to step: ${flowState.step}`);
                                         needsLlmCall = true; // Need LLM to ask for confirmation
                                         continue; // Restart loop
                                     } else {
-                                        state.step = 'parameter_extraction_pending'; // Go back to asking directly
-                                        console.log(`[Orchestrator] ParameterExtractorTool failed. Moving back to step: ${state.step}`);
-                                        generatedMessageAfterTool = `I couldn't find the ${getUserFriendlyParamName(state.parameterToExtract || '')} ID in that URL. Can you please provide it directly?`;
+                                        flowState.step = 'parameter_extraction_pending'; // Go back to asking directly
+                                        console.log(`[Orchestrator] ParameterExtractorTool failed. Moving back to step: ${flowState.step}`);
+                                        generatedMessageAfterTool = `I couldn't find the ${getUserFriendlyParamName(flowState.parameterToExtract || '')} ID in that URL. Can you please provide it directly?`;
                                         needsLlmCall = false;
                                     }
-                                } else if (response.name === deliverableGeneratorTool.name && state.step === 'parameters_confirmed') {
+                                } else if (response.name === deliverableGeneratorTool.name && flowState.step === 'parameters_confirmed') {
                                     const result = response.output as { deliverable: string };
-                                    state.generatedDeliverable = result?.deliverable || "Error: Could not generate deliverable.";
-                                    state.deliverableType = state.userObjective as 'adjust_link' | 'qr_code' | 'push_payload';
-                                    state.step = 'deliverable_generated';
-                                    console.log(`[Orchestrator] DeliverableGeneratorTool success. Moving to step: ${state.step}`);
+                                    flowState.generatedDeliverable = result?.deliverable || "Error: Could not generate deliverable.";
+                                    flowState.deliverableType = flowState.userObjective as 'adjust_link' | 'qr_code' | 'push_payload';
+                                    flowState.step = 'deliverable_generated';
+                                    console.log(`[Orchestrator] DeliverableGeneratorTool success. Moving to step: ${flowState.step}`);
                                     needsLlmCall = true; // Need LLM to present result
                                     continue; // Restart loop
                                 }
                             } catch (toolError: any) {
                                 console.error(`[Orchestrator] Error processing tool response for ${response.name}:`, toolError);
-                                state.step = 'error'; state.errorMessage = `Error processing tool result: ${toolError.message}`;
+                                flowState.step = 'error'; flowState.errorMessage = `Error processing tool result: ${toolError.message}`;
                                 needsLlmCall = false;
                                 forceResponse = `Sorry, something went wrong while processing information (${response.name}). Please try again.`;
                             }
@@ -621,32 +624,32 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     }
                     // Add combined message to history only if it contains something
                     if (historyUpdate.content.length > 0) {
-                        state.history.push(historyUpdate);
+                        flowState.history.push(historyUpdate);
                     }
 
 
                     // === Final State Transitions (Post-LLM) ===
                     // Determine the *next* state based on the *current* state and LLM response/tool results
-                    const currentState = state.step; // Store current step before potential change
+                    const currentState = flowState.step; // Store current step before potential change
 
-                    if (state.identifiedPathTemplate) {
+                    if (flowState.identifiedPathTemplate) {
                         // State transitions for when we have an identified path
                         if (currentState === 'path_identified') {
-                            state.step = 'parameter_extraction_pending';
-                            console.log(`[Orchestrator] Screen confirmation message generated. Moving to step: ${state.step}`);
+                            flowState.step = 'parameter_extraction_pending';
+                            console.log(`[Orchestrator] Screen confirmation message generated. Moving to step: ${flowState.step}`);
                         }
                         // Add other transitions based on identifiedPathTemplate as needed
                     } else {
                         // State transitions for when we don't have an identified path
                         if (currentState === 'start') {
-                            state.userObjective = determineObjective(userInput + agentResponseContent);
-                            state.step = 'objective_clarified';
-                            console.log(`[Orchestrator] Objective determined as ${state.userObjective}. Moving to step: ${state.step}`);
+                            flowState.userObjective = determineObjective(userInput + agentResponseContent);
+                            flowState.step = 'objective_clarified';
+                            console.log(`[Orchestrator] Objective determined as ${flowState.userObjective}. Moving to step: ${flowState.step}`);
                         } else if (currentState === 'objective_clarified') {
                             // Waiting for user description, state remains
                         } else if (currentState === 'path_identified') {
-                            state.step = 'parameter_extraction_pending';
-                            console.log(`[Orchestrator] Screen confirmation message generated. Moving to step: ${state.step}`);
+                            flowState.step = 'parameter_extraction_pending';
+                            console.log(`[Orchestrator] Screen confirmation message generated. Moving to step: ${flowState.step}`);
                         } else if (currentState === 'parameter_extraction_pending') {
                             // Waiting for user to provide param value or URL
                         } else if (currentState === 'url_request_pending') {
@@ -654,31 +657,31 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         } else if (currentState === 'parameters_confirmed') {
                             // LLM should have requested deliverable tool. Error/retry?
                             console.warn(`[Orchestrator] Warning: Reached parameters_confirmed end without tool call.`);
-                            state.step = 'deliverable_generation_pending'; // Force state for now
+                            flowState.step = 'deliverable_generation_pending'; // Force state for now
                         } else if (currentState === 'deliverable_generated') {
                             // Waiting for user confirmation on deliverable/next steps
                         } else if (currentState === 'ui_guidance_pending') {
-                            state.step = 'ui_guided'; // Assume guide was provided
-                            console.log(`[Orchestrator] UI Guide provided. Moving to step: ${state.step}`);
+                            flowState.step = 'ui_guided'; // Assume guide was provided
+                            console.log(`[Orchestrator] UI Guide provided. Moving to step: ${flowState.step}`);
                         } else if (currentState === 'ui_guided') {
-                            state.step = 'testing_pending'; // Move to testing after UI guide
-                            console.log(`[Orchestrator] Moving to testing. Step: ${state.step}`);
+                            flowState.step = 'testing_pending'; // Move to testing after UI guide
+                            console.log(`[Orchestrator] Moving to testing. Step: ${flowState.step}`);
                         } else if (currentState === 'testing_pending') {
-                            state.step = 'final_confirmation_pending'; // Assume checklist provided
-                            console.log(`[Orchestrator] Testing checklist provided. Moving to step: ${state.step}`);
+                            flowState.step = 'final_confirmation_pending'; // Assume checklist provided
+                            console.log(`[Orchestrator] Testing checklist provided. Moving to step: ${flowState.step}`);
                         } else if (currentState === 'complete') {
                             // Stay in complete state
                         }
                     }
 
                     // If the state didn't change and we didn't force a response, break the loop
-                    if (state.step === currentState && !forceResponse && !generatedMessageAfterTool && !toolCalls.length && !toolResponses.length) {
-                        console.log(`[Orchestrator] No state change or action. Breaking loop for step: ${state.step}`);
+                    if (flowState.step === currentState && !forceResponse && !generatedMessageAfterTool && !toolCalls.length && !toolResponses.length) {
+                        console.log(`[Orchestrator] No state change or action. Breaking loop for step: ${flowState.step}`);
                         break;
                     }
                     // If the step changed, continue the loop to potentially run the next step's logic immediately
-                    if (state.step !== currentState) {
-                        console.log(`[Orchestrator] State changed from ${currentState} to ${state.step}. Continuing loop.`);
+                    if (flowState.step !== currentState) {
+                        console.log(`[Orchestrator] State changed from ${currentState} to ${flowState.step}. Continuing loop.`);
                         userInput = ""; // Clear user input as we are processing internal transitions
                         continue;
                     }
@@ -693,17 +696,17 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     // Potentially set error state
                 }
 
-                console.log(`[deeplinkHelperFlow] Turn End. Final Step: ${state.step}. Returning: ${agentResponseContent}`);
+                console.log(`[deeplinkHelperFlow] Turn End. Final Step: ${flowState.step}. Returning: ${agentResponseContent}`);
                 return agentResponseContent;
 
             } catch (error: any) {
-                console.error(`[deeplinkHelperFlow] FATAL Error during turn processing (Step: ${state.step}):`, error);
-                state.step = 'error';
-                state.errorMessage = error.message || "An unknown error occurred";
-                const errorMsg = `Sorry, a critical error occurred: ${state.errorMessage}. Please try starting over.`;
+                console.error(`[deeplinkHelperFlow] FATAL Error during turn processing (Step: ${flowState.step}):`, error);
+                flowState.step = 'error';
+                flowState.errorMessage = error.message || "An unknown error occurred";
+                const errorMsg = `Sorry, a critical error occurred: ${flowState.errorMessage}. Please try starting over.`;
                 // Avoid adding recursive error messages to history
-                if (state.history[state.history.length - 1]?.role !== 'model' || !state.history[state.history.length - 1]?.content[0]?.text?.startsWith("Sorry")) {
-                    state.history.push({ role: 'model', content: [{ text: errorMsg }] });
+                if (flowState.history[flowState.history.length - 1]?.role !== 'model' || !flowState.history[flowState.history.length - 1]?.content[0]?.text?.startsWith("Sorry")) {
+                    flowState.history.push({ role: 'model', content: [{ text: errorMsg }] });
                 }
                 return errorMsg;
             }

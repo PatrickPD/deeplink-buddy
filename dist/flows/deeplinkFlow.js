@@ -42,6 +42,9 @@ const systemPrompt_1 = require("../prompts/systemPrompt");
 const deliverableGenerator_1 = require("../tools/deliverableGenerator");
 const parameterExtractor_1 = require("../tools/parameterExtractor");
 const screenResolver_1 = require("../tools/screenResolver");
+// Define schemas for the flow
+const FlowInputSchema = zod_1.z.string().describe("User's message");
+const FlowOutputSchema = zod_1.z.string().describe("Agent's response");
 const initialState = {
     step: 'start',
     history: [],
@@ -90,15 +93,16 @@ function getStepInstructions(step, state) {
             relevantInstructions = `
             **Current Goal:** Start conversation, clarify objective (Adjust link, QR, push?).
             **Reference:** Conv Flow Step 1.
-            **Action:** Greet, ask objective.`;
+            **Action:** Greet, ask objective.
+            **Example:** "Hi! How can I help you create a deeplink today?"`;
             break;
         case 'objective_clarified':
             relevantInstructions = `
             **Current Goal:** Get screen description.
             **Reference:** Conv Flow Step 2.
             **Context:** Objective='${state.userObjective || 'unknown'}'. Previous screen was rejected: ${state.identifiedPathTemplate ? 'Yes' : 'No'}
-            **Action:** ${state.identifiedPathTemplate ? 'The user rejected the previous suggestion. Ask for a clearer description of what they want.' : 'Ask user to describe the screen.'}
-            **Example:** ${state.identifiedPathTemplate ? '"I see the previous screen wasn\'t what you needed. Could you describe the specific screen you want to link to in more detail? For example, is it a product detail page, a category list, a shopping cart, etc?"' : '"Could you describe the screen in the app you want this to link to?"'}`;
+            **Action:** ${state.identifiedPathTemplate ? 'The user rejected the previous suggestion. Ask for a clearer description of what they want.' : 'Ask user to describe the screen. Encourage them to upload a screenshot if possible.'}
+            **Example:** ${state.identifiedPathTemplate ? '"I see the previous screen wasn\'t what you needed. Could you describe the specific screen you want to link to in more detail? For example, is it a product detail page, a category list, a shopping cart, etc? If possible, you can also upload a screenshot of the screen you want."' : '"Could you describe the screen in the app you want this to link to? If possible, uploading a screenshot would be very helpful for accurate identification."'}`;
             break;
         case 'path_identified':
             relevantInstructions = `
@@ -226,11 +230,17 @@ function getStepInstructions(step, state) {
     return `
 ${systemPrompt_1.BASE_SYSTEM_PROMPT}
 
+**Important Note About Screenshots:**
+You have access to a directory containing all app screenshots. You MUST use these for matching against the user's description. Do NOT tell users you don't have access to screenshots. When users describe a screen, you should automatically search through the available screenshots to find matching ones.
+
 **Full Instructions (for reference):**
 ${fullInstructions}
 ---
 **Current Task Focus (Follow ONLY these instructions for this turn):**
 ${relevantInstructions}
+
+**Important Note for Screenshot Upload:**
+If the user mentions they can't upload a screenshot or is having issues with uploads, acknowledge the problem and let them know it's fine since you already have access to the app's screenshots library. Ask them to provide a detailed description to help match one of the available screenshots you already have.
 
 **History:**
 ${state.history.slice(-5).map(m => `${m.role}: ${m.content[0]?.text || '[Tool Result]'}`).join('\n')}
@@ -239,9 +249,6 @@ ${state.history.slice(-5).map(m => `${m.role}: ${m.content[0]?.text || '[Tool Re
 Generate the single next response OR a tool call request based ONLY on the 'Current Task Focus'. Adhere strictly to the rules for the current step.
 `;
 }
-// Define schemas using Zod
-const FlowInputSchema = zod_1.z.string().describe("User input");
-const FlowOutputSchema = zod_1.z.string().describe("Agent response");
 // --- Main Flow Function (Full Orchestration) ---
 function createDeeplinkHelperFlow(aiInstance) {
     const deliverableGeneratorTool = (0, deliverableGenerator_1.createDeliverableGeneratorTool)(aiInstance);
@@ -258,14 +265,34 @@ function createDeeplinkHelperFlow(aiInstance) {
             return 'push_payload';
         return 'unknown';
     };
+    // Check if the user is mentioning upload issues
+    const detectUploadIssues = (text) => {
+        const lowerText = text.toLowerCase();
+        return lowerText.includes('can\'t upload') ||
+            lowerText.includes('cannot upload') ||
+            lowerText.includes('upload not working') ||
+            lowerText.includes('upload issue') ||
+            lowerText.includes('upload problem') ||
+            (lowerText.includes('upload') && lowerText.includes('not') && lowerText.includes('work'));
+    };
     return aiInstance.defineFlow({
         name: 'deeplinkHelperFlow',
         inputSchema: FlowInputSchema,
         outputSchema: FlowOutputSchema,
-        initialState: initialState,
-    }, async (userInput, state, context) => {
+    }, async (userInput, state) => {
+        // Initialize state if this is the first turn
+        if (!state.history) {
+            state.step = 'start';
+            state.history = [];
+            state.extractedParams = {};
+        }
         console.log(`[deeplinkHelperFlow] Turn Start. Input: "${userInput}", Current Step: ${state.step}`);
         state.history.push({ role: 'user', content: [{ text: userInput }] });
+        // Check for upload issues and add to state context if detected
+        if (detectUploadIssues(userInput)) {
+            console.log(`[deeplinkHelperFlow] Upload issues detected in user input`);
+            // We'll handle this in the instructions for the LLM
+        }
         let agentResponseContent = "";
         let loopDetection = 0; // Prevent infinite loops
         try {
@@ -314,6 +341,13 @@ function createDeeplinkHelperFlow(aiInstance) {
                         forceResponse = "I'm not sure if that's a yes or no. Does the screen I showed/described match what you want? Please answer with 'yes' or 'no'.";
                         needsLlmCall = false; // Stay in this state, just repeat the question
                     }
+                }
+                else if (state.step === 'path_identified') {
+                    // After a path has been identified, we need to move to confirmation step
+                    // before showing the confirmation message
+                    state.step = 'screen_confirmation_pending';
+                    console.log(`[Orchestrator] Path identified. Moving to screen_confirmation_pending.`);
+                    needsLlmCall = true; // Still need LLM to generate confirmation message
                 }
                 else if (state.step === 'parameter_extraction_pending') {
                     if (userInput.toLowerCase().startsWith('http') && state.parameterToExtract) {
@@ -432,22 +466,13 @@ function createDeeplinkHelperFlow(aiInstance) {
                 });
                 // Extract data from response safely - adjust as needed based on actual Genkit API
                 agentResponseContent = llmResponse.text || "Sorry, I encountered an issue generating a response.";
-                // For toolCalls and toolResponses, use a safer approach to avoid TypeScript errors
-                let toolCalls = [];
-                let toolResponses = [];
-                // Only try to access these properties if they exist on the response object
-                if (typeof llmResponse.toolCalls === 'function') {
-                    toolCalls = llmResponse.toolCalls() || [];
-                }
-                else if (Array.isArray(llmResponse.toolCalls)) {
-                    toolCalls = llmResponse.toolCalls;
-                }
-                if (typeof llmResponse.toolCallResponses === 'function') {
-                    toolResponses = llmResponse.toolCallResponses() || [];
-                }
-                else if (Array.isArray(llmResponse.toolCallResponses)) {
-                    toolResponses = llmResponse.toolCallResponses;
-                }
+                // For toolCalls and toolResponses, use a type-safe approach
+                const toolCalls = 'toolCalls' in llmResponse ?
+                    (typeof llmResponse.toolCalls === 'function' ? llmResponse.toolCalls() : llmResponse.toolCalls) || []
+                    : [];
+                const toolResponses = 'toolCallResponses' in llmResponse ?
+                    (typeof llmResponse.toolCallResponses === 'function' ? llmResponse.toolCallResponses() : llmResponse.toolCallResponses) || []
+                    : [];
                 console.log(`[deeplinkHelperFlow] LLM raw response for step ${state.step}:`, agentResponseContent);
                 if (toolCalls.length > 0)
                     console.log(`[deeplinkHelperFlow] LLM requested tool calls:`, toolCalls);
@@ -468,22 +493,82 @@ function createDeeplinkHelperFlow(aiInstance) {
                                     const wasRejected = state.userScreenDescription?.includes(`rejected: ${result.path}`);
                                     if (wasRejected) {
                                         console.log(`[Orchestrator] Warning: ScreenResolverTool returned a previously rejected path: ${result.path}`);
-                                        // Force a different response than just showing the same screen again
-                                        agentResponseContent = "I'm having trouble understanding which screen you need. Could you describe it differently? For example, tell me what actions you can perform on this screen or what information it displays.";
+                                        // Instead of just showing an error, try to use alternative matches if available
+                                        if (result.alternativeMatches && result.alternativeMatches.length > 0) {
+                                            // Find the first alternative that wasn't rejected
+                                            const validAlternative = result.alternativeMatches.find(alt => !state.userScreenDescription?.includes(`rejected: ${alt.path}`));
+                                            if (validAlternative) {
+                                                console.log(`[Orchestrator] Using alternative path: ${validAlternative.path} instead of rejected path`);
+                                                state.identifiedPathTemplate = validAlternative.path;
+                                                state.identifiedScreenshotFile = validAlternative.screenshotFile || null;
+                                                state.requiredParams = validAlternative.path.match(/:[a-zA-Z0-9-_]+\??/g) || [];
+                                                state.extractedParams = {}; // Reset params when path changes
+                                                state.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
+                                                needsLlmCall = true;
+                                                continue; // Restart loop to get confirmation instructions
+                                            }
+                                        }
+                                        // If no valid alternatives, force a different response than just showing the same screen again
+                                        agentResponseContent = "I'm having trouble understanding which screen you need. Could you describe it differently? For example, tell me what actions you can perform on this screen or what information it displays. You can also upload a screenshot if available.";
                                         needsLlmCall = false;
                                         break; // Don't process other tools
                                     }
-                                    state.identifiedPathTemplate = result.path;
-                                    state.identifiedScreenshotFile = result.screenshotFile || null;
-                                    state.requiredParams = result.requiredParams || [];
-                                    state.extractedParams = {}; // Reset params when path changes
-                                    state.step = 'path_identified'; // Move to prepare confirmation
-                                    console.log(`[Orchestrator] ScreenResolverTool success. Path: ${result.path}, Screenshot: ${result.screenshotFile}. Moving to step: ${state.step}`);
-                                    needsLlmCall = true; // Need LLM to generate confirmation msg now
-                                    continue; // Restart loop to get confirmation instructions
+                                    // If multiple matches were found and not handling a specific match request
+                                    if (result.alternativeMatches && result.alternativeMatches.length > 0 && !userInput.match(/\b(option|choice|alternative|#|number)\s*(\d+|\w+)\b/i)) {
+                                        // Present the options to the user for selection
+                                        const options = [`**Main Match:** ${result.screenshotFile || result.path} - ${result.path}`];
+                                        result.alternativeMatches.forEach((alt, index) => {
+                                            options.push(`**Option ${index + 1}:** ${alt.screenshotFile || alt.path} - ${alt.description || alt.path}`);
+                                        });
+                                        agentResponseContent = `Based on your description, I found these potential matches from our screenshot library:\n\n${options.join('\n')}\n\nWhich one best matches what you're looking for? You can select by number or description.`;
+                                        // Store the matches for later reference
+                                        state.potentialMatches = [
+                                            { path: result.path, screenshotFile: result.screenshotFile || undefined, requiredParams: result.requiredParams || [] },
+                                            ...result.alternativeMatches.map(alt => ({
+                                                path: alt.path,
+                                                screenshotFile: alt.screenshotFile || undefined,
+                                                requiredParams: alt.path.match(/:[a-zA-Z0-9-_]+\??/g) || []
+                                            }))
+                                        ];
+                                        needsLlmCall = false;
+                                        break; // Don't process other tools
+                                    }
+                                    // If the user is responding to a multiple choice selection
+                                    else if (state.potentialMatches && state.potentialMatches.length > 0 && userInput.match(/\b(option|choice|alternative|#|number)?\s*(\d+|\w+)\b/i)) {
+                                        const choiceMatch = userInput.match(/\b(option|choice|alternative|#|number)?\s*(\d+|\w+)\b/i);
+                                        let selectedIndex = 0; // Default to main match
+                                        if (choiceMatch && choiceMatch[2]) {
+                                            // Try to parse selected option number
+                                            const optionNumber = parseInt(choiceMatch[2]);
+                                            if (!isNaN(optionNumber) && optionNumber > 0 && optionNumber <= state.potentialMatches.length - 1) {
+                                                selectedIndex = optionNumber;
+                                            }
+                                        }
+                                        const selectedMatch = state.potentialMatches[selectedIndex];
+                                        state.identifiedPathTemplate = selectedMatch.path;
+                                        state.identifiedScreenshotFile = selectedMatch.screenshotFile;
+                                        state.requiredParams = selectedMatch.requiredParams;
+                                        state.extractedParams = {}; // Reset params when path changes
+                                        state.potentialMatches = undefined; // Clear potential matches
+                                        state.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
+                                        console.log(`[Orchestrator] User selected match ${selectedIndex}: ${selectedMatch.path}`);
+                                        needsLlmCall = true;
+                                        continue; // Restart loop to get confirmation instructions
+                                    }
+                                    // Normal single match flow
+                                    else {
+                                        state.identifiedPathTemplate = result.path;
+                                        state.identifiedScreenshotFile = result.screenshotFile || null;
+                                        state.requiredParams = result.requiredParams || [];
+                                        state.extractedParams = {}; // Reset params when path changes
+                                        state.step = 'parameter_extraction_pending'; // Change to parameter_extraction_pending
+                                        console.log(`[Orchestrator] ScreenResolverTool success. Path: ${result.path}, Screenshot: ${result.screenshotFile}. Moving to step: ${state.step}`);
+                                        needsLlmCall = true; // Need LLM to generate confirmation msg now
+                                        continue; // Restart loop to get confirmation instructions
+                                    }
                                 }
                                 else {
-                                    agentResponseContent = "I couldn't identify a specific screen from that description. Could you try describing it differently or mentioning a key feature?";
+                                    agentResponseContent = "I couldn't identify a specific screen from that description. Could you try describing it differently or mentioning a key feature? Uploading a screenshot would also help.";
                                     needsLlmCall = false; // Don't call LLM again this turn
                                 }
                             }
@@ -544,51 +629,57 @@ function createDeeplinkHelperFlow(aiInstance) {
                 // === Final State Transitions (Post-LLM) ===
                 // Determine the *next* state based on the *current* state and LLM response/tool results
                 const currentState = state.step; // Store current step before potential change
-                if (currentState === 'start' && !toolCalls.length) {
-                    state.userObjective = determineObjective(userInput + agentResponseContent); // Use input+response
-                    state.step = 'objective_clarified';
-                    console.log(`[Orchestrator] Objective determined as ${state.userObjective}. Moving to step: ${state.step}`);
+                if (state.identifiedPathTemplate) {
+                    // State transitions for when we have an identified path
+                    if (currentState === 'path_identified') {
+                        state.step = 'parameter_extraction_pending';
+                        console.log(`[Orchestrator] Screen confirmation message generated. Moving to step: ${state.step}`);
+                    }
+                    // Add other transitions based on identifiedPathTemplate as needed
                 }
-                else if (currentState === 'objective_clarified' && !toolCalls.length && !toolResponses.length) {
-                    // Waiting for user description, state remains
-                }
-                else if (currentState === 'path_identified' && !toolCalls.length && !toolResponses.length) {
-                    state.step = 'screen_confirmation_pending'; // Assume confirmation msg generated
-                    console.log(`[Orchestrator] Screen confirmation message generated. Moving to step: ${state.step}`);
-                }
-                else if (currentState === 'parameter_extraction_pending' && !toolCalls.length && !toolResponses.length) {
-                    // Waiting for user to provide param value or URL
-                }
-                else if (currentState === 'url_request_pending' && !toolCalls.length && !toolResponses.length) {
-                    // If no tool call happened, likely waiting for user or tool failed previously
-                }
-                else if (currentState === 'parameters_confirmed' && !toolCalls.length && !toolResponses.length) {
-                    // LLM should have requested deliverable tool. Error/retry?
-                    console.warn(`[Orchestrator] Warning: Reached parameters_confirmed end without tool call.`);
-                    state.step = 'deliverable_generation_pending'; // Force state for now
-                }
-                else if (currentState === 'deliverable_generated' && !toolCalls.length && !toolResponses.length) {
-                    // Waiting for user confirmation on deliverable/next steps
-                }
-                else if (currentState === 'ui_guidance_pending' && !toolCalls.length && !toolResponses.length) {
-                    state.step = 'ui_guided'; // Assume guide was provided
-                    console.log(`[Orchestrator] UI Guide provided. Moving to step: ${state.step}`);
-                }
-                else if (currentState === 'ui_guided' && !toolCalls.length && !toolResponses.length) {
-                    state.step = 'testing_pending'; // Move to testing after UI guide
-                    console.log(`[Orchestrator] Moving to testing. Step: ${state.step}`);
-                }
-                else if (currentState === 'testing_pending' && !toolCalls.length && !toolResponses.length) {
-                    state.step = 'final_confirmation_pending'; // Assume checklist provided
-                    console.log(`[Orchestrator] Testing checklist provided. Moving to step: ${state.step}`);
-                }
-                else if (currentState === 'complete' && !toolCalls.length && !toolResponses.length) {
-                    // Stay in complete state
-                }
-                else if (state.step === currentState && needsLlmCall && loopDetection > 1) {
-                    // If state didn't change after LLM call, break loop to avoid issues
-                    console.warn(`[Orchestrator] State ${state.step} did not change after LLM call. Breaking loop.`);
-                    break;
+                else {
+                    // State transitions for when we don't have an identified path
+                    if (currentState === 'start') {
+                        state.userObjective = determineObjective(userInput + agentResponseContent);
+                        state.step = 'objective_clarified';
+                        console.log(`[Orchestrator] Objective determined as ${state.userObjective}. Moving to step: ${state.step}`);
+                    }
+                    else if (currentState === 'objective_clarified') {
+                        // Waiting for user description, state remains
+                    }
+                    else if (currentState === 'path_identified') {
+                        state.step = 'parameter_extraction_pending';
+                        console.log(`[Orchestrator] Screen confirmation message generated. Moving to step: ${state.step}`);
+                    }
+                    else if (currentState === 'parameter_extraction_pending') {
+                        // Waiting for user to provide param value or URL
+                    }
+                    else if (currentState === 'url_request_pending') {
+                        // If no tool call happened, likely waiting for user or tool failed previously
+                    }
+                    else if (currentState === 'parameters_confirmed') {
+                        // LLM should have requested deliverable tool. Error/retry?
+                        console.warn(`[Orchestrator] Warning: Reached parameters_confirmed end without tool call.`);
+                        state.step = 'deliverable_generation_pending'; // Force state for now
+                    }
+                    else if (currentState === 'deliverable_generated') {
+                        // Waiting for user confirmation on deliverable/next steps
+                    }
+                    else if (currentState === 'ui_guidance_pending') {
+                        state.step = 'ui_guided'; // Assume guide was provided
+                        console.log(`[Orchestrator] UI Guide provided. Moving to step: ${state.step}`);
+                    }
+                    else if (currentState === 'ui_guided') {
+                        state.step = 'testing_pending'; // Move to testing after UI guide
+                        console.log(`[Orchestrator] Moving to testing. Step: ${state.step}`);
+                    }
+                    else if (currentState === 'testing_pending') {
+                        state.step = 'final_confirmation_pending'; // Assume checklist provided
+                        console.log(`[Orchestrator] Testing checklist provided. Moving to step: ${state.step}`);
+                    }
+                    else if (currentState === 'complete') {
+                        // Stay in complete state
+                    }
                 }
                 // If the state didn't change and we didn't force a response, break the loop
                 if (state.step === currentState && !forceResponse && !generatedMessageAfterTool && !toolCalls.length && !toolResponses.length) {
