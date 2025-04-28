@@ -82,8 +82,9 @@ function getStepInstructions(step: DeeplinkFlowState['step'], state: DeeplinkFlo
             relevantInstructions = `
             **Current Goal:** Get screen description.
             **Reference:** Conv Flow Step 2.
-            **Context:** Objective='${state.userObjective || 'unknown'}'.
-            **Action:** Ask user to describe the screen.`;
+            **Context:** Objective='${state.userObjective || 'unknown'}'. Previous screen was rejected: ${state.identifiedPathTemplate ? 'Yes' : 'No'}
+            **Action:** ${state.identifiedPathTemplate ? 'The user rejected the previous suggestion. Ask for a clearer description of what they want.' : 'Ask user to describe the screen.'}
+            **Example:** ${state.identifiedPathTemplate ? '"I see the previous screen wasn\'t what you needed. Could you describe the specific screen you want to link to in more detail? For example, is it a product detail page, a category list, a shopping cart, etc?"' : '"Could you describe the screen in the app you want this to link to?"'}`;
             break;
         case 'path_identified':
             relevantInstructions = `
@@ -98,8 +99,10 @@ function getStepInstructions(step: DeeplinkFlowState['step'], state: DeeplinkFlo
              **Current Goal:** Process user's screen confirmation.
              **Reference:** Conv Flow Step 3 (End).
              **Context:** Awaiting yes/no for screen '${state.identifiedPathTemplate || 'None'}'.
-             **Action:** Analyze last user message. State next step (params needed? generation?). If denied, state going back.
-             **Output:** Acknowledgement and next step statement.`;
+             **Action:** ONLY analyze if the user confirmed or denied the screen. DO NOT proceed to parameter extraction or other steps.
+             **CRITICAL:** If the user's message indicates this is NOT the right screen, you MUST acknowledge that and say you'll ask for more details about what they need. DO NOT ask for any parameters or IDs. The conversation MUST go back to asking for screen description.
+             **Example Denial Response:** "I understand this isn't the right screen. Let's try again. Could you describe the screen you need in more detail?"
+             **Output:** ONLY acknowledgement of confirmation/denial.`;
             break;
         case 'parameter_extraction_pending':
             const paramToAsk = state.parameterToExtract || findNextMissingParam(state);
@@ -268,19 +271,42 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     // === Pre-LLM State Checks & Transitions ===
                     if (state.step === 'screen_confirmation_pending') {
                         const confirmation = userInput.toLowerCase();
+                        const explicitNo = confirmation.includes('no') || confirmation.includes('wrong') ||
+                            confirmation.includes('nein') || confirmation.includes('falsch') ||
+                            confirmation.includes('not this') || confirmation.includes('isn\'t right') ||
+                            confirmation.includes('not right') || confirmation.includes('not correct');
+
+                        // Also detect implicit rejections like "this is a screen with..." (describing something different)
+                        const implicitNo = confirmation.includes('this is') || confirmation.includes('that\'s a') ||
+                            confirmation.includes('that is') || confirmation.includes('looks like') ||
+                            (confirmation.includes('different') && !confirmation.includes('yes')) ||
+                            (confirmation.includes('other') && !confirmation.includes('yes'));
+
                         if (confirmation.includes('yes') || confirmation.includes('correct') || confirmation.includes('ja') || confirmation.includes('stimmt')) {
+                            // ONLY if explicitly confirmed, proceed to parameter extraction or completion
+                            console.log(`[Orchestrator] Screen EXPLICITLY confirmed. Moving to parameter extraction.`);
                             state.parameterToExtract = findNextMissingParam(state);
                             state.step = state.parameterToExtract ? 'parameter_extraction_pending' : 'parameters_confirmed';
-                            console.log(`[Orchestrator] Screen confirmed. Next Param: ${state.parameterToExtract}. Moving to step: ${state.step}`);
                             needsLlmCall = true; // Need LLM to ask for param or confirm completion
-                        } else if (confirmation.includes('no') || confirmation.includes('wrong') || confirmation.includes('nein') || confirmation.includes('falsch')) {
-                            state.step = 'objective_clarified'; // Go back
-                            state.identifiedPathTemplate = undefined; state.identifiedScreenshotFile = undefined; state.requiredParams = undefined; state.extractedParams = {};
-                            console.log(`[Orchestrator] Screen denied. Moving back to step: ${state.step}`);
-                            forceResponse = "Okay, my apologies. That wasn't the right screen. Could you please describe the screen you want to link to again?";
+                        } else if (explicitNo || implicitNo) {
+                            // If rejected (explicitly or implicitly), clear the current path and go back to asking for description
+                            console.log(`[Orchestrator] Screen rejected (${explicitNo ? 'explicitly' : 'implicitly'}). Moving back to objective_clarified.`);
+                            // Store the rejected path temporarily (to know we need a different one)
+                            const rejectedPath = state.identifiedPathTemplate;
+
+                            // Clear the current identification but keep track of it being rejected
+                            state.step = 'objective_clarified';
+                            state.identifiedPathTemplate = undefined;
+                            state.identifiedScreenshotFile = undefined;
+                            state.requiredParams = undefined;
+                            state.extractedParams = {};
+                            state.userScreenDescription = `${state.userScreenDescription || ''} (rejected: ${rejectedPath})`;
+
+                            forceResponse = "I understand that's not the right screen. Let's try again. Could you describe the specific screen you want to link to in more detail?";
                             needsLlmCall = false;
                         } else {
-                            forceResponse = "Sorry, I didn't quite understand. Does the screen I showed/described look correct? Please answer with 'yes' or 'no'.";
+                            // Not clear if confirmed or denied - ask for explicit confirmation
+                            forceResponse = "I'm not sure if that's a yes or no. Does the screen I showed/described match what you want? Please answer with 'yes' or 'no'.";
                             needsLlmCall = false; // Stay in this state, just repeat the question
                         }
                     } else if (state.step === 'parameter_extraction_pending') {
@@ -425,6 +451,16 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                                 if (response.name === screenResolverTool.name && (state.step === 'objective_clarified' || state.step === 'path_identified')) {
                                     const result = response.output as { path: string, screenshotFile?: string, requiredParams?: string[] };
                                     if (result?.path) {
+                                        // Check if this path was previously rejected
+                                        const wasRejected = state.userScreenDescription?.includes(`rejected: ${result.path}`);
+                                        if (wasRejected) {
+                                            console.log(`[Orchestrator] Warning: ScreenResolverTool returned a previously rejected path: ${result.path}`);
+                                            // Force a different response than just showing the same screen again
+                                            agentResponseContent = "I'm having trouble understanding which screen you need. Could you describe it differently? For example, tell me what actions you can perform on this screen or what information it displays.";
+                                            needsLlmCall = false;
+                                            break; // Don't process other tools
+                                        }
+
                                         state.identifiedPathTemplate = result.path;
                                         state.identifiedScreenshotFile = result.screenshotFile || null;
                                         state.requiredParams = result.requiredParams || [];
