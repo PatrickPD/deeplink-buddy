@@ -1173,7 +1173,7 @@ with st.sidebar:
 
 # Main Chat Interface
 st.title(PAGE_TITLE)
-st.caption("Chat about deeplinks or analyze uploaded images. Context is maintained.")
+st.caption("Chat about deeplinks, tracking links, push notifications, and QR codes")
 
 # Configure Gemini Model
 model = configure_gemini()
