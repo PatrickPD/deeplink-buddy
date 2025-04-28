@@ -7,7 +7,7 @@ import json # For potentially printing the payload for debugging
 import re # For parsing screenshot marker
 
 # --- Configuration ---
-PAGE_TITLE = "Conversational Deeplink Helper"
+PAGE_TITLE = "Deeplink Helper"
 LOGO_PATH = "logo.png" # Make sure logo.png is in the same folder
 SCREENSHOT_DIR = "screenshots"
 
