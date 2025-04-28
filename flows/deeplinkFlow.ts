@@ -450,11 +450,6 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                         console.log(`[Orchestrator] Step is 'ui_guidance_pending'. Expecting LLM to provide UI steps.`);
                         // No forced response or state change here; LLM should act.
                         needsLlmCall = true;
-                    } else if (flowState.step === 'ui_guided') {
-                        // *** Move to testing after guide - This transition seems okay ***
-                        flowState.step = 'testing_pending'; // Move to testing after UI guide
-                        console.log(`[Orchestrator] Moving to testing. Step: ${flowState.step}`);
-                        needsLlmCall = true; // Let LLM provide checklist
                     } else if (flowState.step === 'testing_pending') {
                         // *** Logic to provide checklist - This should be handled by LLM based on instructions ***
                         console.log(`[Orchestrator] Step is 'testing_pending'. Expecting LLM to provide checklist.`);
@@ -717,20 +712,18 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
                     } else if (currentState === 'url_request_pending') {
                         // If no tool call happened, likely waiting for user or tool failed previously
                     } else if (currentState === 'parameters_confirmed') {
-                        // LLM should have requested deliverable tool. Error/retry?
-                        console.warn(`[Orchestrator] Warning: Reached parameters_confirmed end without tool call.`);
-                        flowState.step = 'deliverable_generation_pending'; // Force state for now
+                        // LLM should have requested deliverable tool. Transition handled by LLM tool request or pre-check.
+                        // If LLM didn't request tool, the pre-check forces deliverable_generation_pending.
                     } else if (currentState === 'deliverable_generated') {
-                        // Waiting for user confirmation on deliverable/next steps
+                        // Waiting for user confirmation on deliverable/next steps. Transition handled by pre-check.
                     } else if (currentState === 'ui_guidance_pending') {
-                        flowState.step = 'ui_guided'; // Assume guide was provided
-                        console.log(`[Orchestrator] UI Guide provided. Moving to step: ${flowState.step}`);
-                    } else if (currentState === 'ui_guided') {
-                        flowState.step = 'testing_pending'; // Move to testing after UI guide
-                        console.log(`[Orchestrator] Moving to testing. Step: ${flowState.step}`);
+                        // Stay in this state until LLM provides the guide. Transition to ui_guided happens in pre-check logic after LLM response.
+                        // Let LLM provide the guide. The pre-check logic for deliverable_generated -> ui_guidance or testing handles moving *into* this state.
+                        // The next turn will process the user response *after* seeing the guide.
                     } else if (currentState === 'testing_pending') {
-                        flowState.step = 'final_confirmation_pending'; // Assume checklist provided
-                        console.log(`[Orchestrator] Testing checklist provided. Moving to step: ${flowState.step}`);
+                        // Stay in this state until LLM provides the checklist. Transition happens *after* LLM responds.
+                        // The pre-check logic for deliverable_generated -> testing handles moving *into* this state.
+                        // The next turn will process the user response *after* seeing the checklist (handled by final_confirmation_pending pre-check).
                     } else if (currentState === 'complete') {
                         // Stay in complete state
                     }
