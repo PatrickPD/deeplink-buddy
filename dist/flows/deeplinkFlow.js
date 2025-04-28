@@ -507,17 +507,19 @@ function createDeeplinkHelperFlow(aiInstance) {
                     throw new Error(stepInstructions);
                 const messages = [
                     { role: 'system', content: [{ text: stepInstructions }] },
-                    ...flowState.history.slice(-10),
+                    ...flowState.history.slice(-10).filter(msg => msg.role !== 'system'), // Filter out any system messages from history
                 ];
                 const availableTools = [screenResolverTool, parameterExtractorTool, deliverableGeneratorTool];
                 // Note for LLM if screenshot was uploaded in this session
                 if (flowState.uploadedScreenshot && flowState.step === 'objective_clarified') {
-                    messages.push({
-                        role: 'system',
-                        content: [{
-                                text: `SYSTEM NOTE: The user has uploaded a screenshot in this session (you cannot see it directly in history, but it is stored). When you call screenResolverTool, ensure you include the 'uploadedScreenshot' parameter from the flow state.`
-                            }]
-                    });
+                    // Instead of adding a system message, modify the user's last message to include context
+                    const lastUserIndex = messages.findIndex(msg => msg.role === 'user');
+                    if (lastUserIndex !== -1) {
+                        const userText = messages[lastUserIndex].content[0]?.text || '';
+                        messages[lastUserIndex].content = [{
+                                text: `${userText} [System Note: I've uploaded a screenshot to help identify the screen]`
+                            }];
+                    }
                 }
                 console.log(`[deeplinkHelperFlow] Calling LLM for step: ${flowState.step}`);
                 const llmResponse = await aiInstance.generate({
@@ -540,13 +542,14 @@ function createDeeplinkHelperFlow(aiInstance) {
                     console.log(`[deeplinkHelperFlow] LLM requested tool calls:`, toolCalls);
                 if (toolResponses.length > 0)
                     console.log(`[deeplinkHelperFlow] Tool responses:`, toolResponses);
-                const historyUpdate = { role: 'model', content: [] };
+                const historyUpdate = { role: 'model', content: [{ text: agentResponseContent }] };
                 let generatedMessageAfterTool = ""; // Store messages generated after tool use
                 // === Post-LLM State Updates & Tool Handling ===
                 if (toolResponses.length > 0) {
                     // Process tool results first
                     for (const response of toolResponses) {
-                        historyUpdate.content.push({ toolResponse: response }); // Log tool response
+                        // Don't add raw tool responses to history directly
+                        // historyUpdate.content.push({ toolResponse: response }); // This causes unsupported type errors
                         console.log(`[Orchestrator] Processing tool response: ${response.name}`, JSON.stringify(response.output)); // Log tool output
                         try {
                             if (response.name === screenResolverTool.name && (flowState.step === 'objective_clarified')) {
@@ -683,12 +686,10 @@ function createDeeplinkHelperFlow(aiInstance) {
                 }
                 // If we generated a message after tool use, prioritize it
                 agentResponseContent = generatedMessageAfterTool || agentResponseContent;
-                // Add the text part of the LLM response (if any, and wasn't replaced)
-                if (agentResponseContent && !generatedMessageAfterTool) {
-                    historyUpdate.content.push({ text: agentResponseContent });
-                }
-                // Add combined message to history only if it contains something
-                if (historyUpdate.content.length > 0) {
+                // Update the history with the final response text
+                if (agentResponseContent) {
+                    historyUpdate.content = [{ text: agentResponseContent }];
+                    // Add message to history
                     flowState.history.push(historyUpdate);
                 }
                 // === Final State Transitions (Post-LLM) ===

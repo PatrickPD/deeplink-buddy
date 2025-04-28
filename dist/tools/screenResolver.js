@@ -124,13 +124,34 @@ function createScreenResolverTool(aiInstance) {
         let userImageProvided = false; // Flag to know if user uploaded an image
         // Add user-provided screenshot if available
         if (input.uploadedScreenshot) {
-            imageContents.push({
-                image_url: {
-                    url: input.uploadedScreenshot
+            try {
+                // Validate the base64 format
+                const base64Prefix = 'data:image/';
+                if (input.uploadedScreenshot.startsWith(base64Prefix)) {
+                    imageContents.push({
+                        image_url: {
+                            url: input.uploadedScreenshot
+                        }
+                    });
+                    userImageProvided = true;
+                    console.log("[screenResolverTool] Including user-uploaded screenshot in LLM call.");
                 }
-            });
-            userImageProvided = true;
-            console.log("[screenResolverTool] Including user-uploaded screenshot in LLM call.");
+                else {
+                    // Try to add appropriate prefix if missing
+                    const fixedBase64 = `data:image/jpeg;base64,${input.uploadedScreenshot.replace(/^data:image\/[^;]+;base64,/, '')}`;
+                    imageContents.push({
+                        image_url: {
+                            url: fixedBase64
+                        }
+                    });
+                    userImageProvided = true;
+                    console.log("[screenResolverTool] Fixed and included user-uploaded screenshot in LLM call.");
+                }
+            }
+            catch (error) {
+                console.error("[screenResolverTool] Error processing uploaded screenshot:", error);
+                // Continue without the user image
+            }
         }
         // Add reference screenshots
         for (const screenshot of samplesToUse) {
