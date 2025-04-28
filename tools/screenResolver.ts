@@ -88,7 +88,7 @@ export function createScreenResolverTool(aiInstance: Genkit): ToolAction<typeof 
 
             // Load the images to send to the model - limit to a reasonable number to avoid token limits
             // For production, consider implementing a more sophisticated selection approach
-            const MAX_IMAGES = 8; // Adjust based on your needs and model capabilities
+            const MAX_IMAGES = 200; // Adjust based on your needs and model capabilities
 
             // Filter screenshots to a manageable number
             // In a production system, you'd use a more sophisticated selection strategy
