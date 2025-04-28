@@ -21,9 +21,7 @@ SCREENSHOT_DIR = "screenshots"
 try:
     # Store the base URL of your deployed Genkit API
     GENKIT_API_BASE_URL = st.secrets["GENKIT_API_BASE_URL"]
-    st.error("Error: GENKIT_API_BASE_URL not found in Streamlit secrets.")
-    st.info("Please add the URL of your deployed Genkit API endpoint to Streamlit secrets.")
-    st.stop()
+    st.info("Secret: GENKIT_API_BASE_URL", GENKIT_API_BASE_URL)
     # Example: "https://your-genkit-app-hash-uc.a.run.app" or "http://localhost:3400"
 except KeyError:
     st.error("Error: GENKIT_API_BASE_URL not found in Streamlit secrets.")
