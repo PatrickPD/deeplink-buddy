@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createDeeplinkHelperFlow = createDeeplinkHelperFlow;
+exports.createResetStateFlow = createResetStateFlow;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const zod_1 = require("zod");
@@ -788,5 +789,26 @@ function createDeeplinkHelperFlow(aiInstance) {
             }
             return errorMsg;
         }
+    });
+}
+// Export a separate flow to reset the state
+function createResetStateFlow(aiInstance) {
+    return aiInstance.defineFlow({
+        name: 'resetState',
+        inputSchema: zod_1.z.any().describe("Any input is fine for reset"),
+        outputSchema: zod_1.z.string().describe("Confirmation of reset"),
+    }, async (_input, state) => {
+        // Reset the state completely
+        if (state) {
+            Object.keys(state).forEach(key => {
+                delete state[key];
+            });
+        }
+        // Initialize with default values
+        state.step = 'start';
+        state.history = [];
+        state.extractedParams = {};
+        console.log(`[resetStateFlow] State has been reset`);
+        return "State reset successful";
     });
 }

@@ -118,9 +118,28 @@ with st.sidebar:
 
     # Option to clear conversation / start new flow
     if st.button("Start New Conversation"):
+        # Clear frontend state
         st.session_state.messages = []
         st.session_state.current_image = None
         st.session_state.last_uploaded_file_id = None
+        
+        # Reset backend state by making a reset API call
+        try:
+            reset_endpoint = f"{GENKIT_API_BASE_URL}/resetState"
+            reset_headers = {'Content-Type': 'application/json'}
+            reset_payload = {"data": "reset"}
+            
+            # Send reset request to backend 
+            requests.post(
+                reset_endpoint,
+                headers=reset_headers,
+                json=reset_payload,
+                timeout=10
+            )
+            print("Backend state reset requested")
+        except Exception as e:
+            print(f"Failed to reset backend state: {e}")
+        
         st.rerun()
 
 # Main Chat Interface

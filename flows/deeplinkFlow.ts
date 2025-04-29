@@ -792,3 +792,30 @@ export function createDeeplinkHelperFlow(aiInstance: Genkit) {
         }
     );
 }
+
+// Export a separate flow to reset the state
+export function createResetStateFlow(aiInstance: Genkit) {
+    return aiInstance.defineFlow(
+        {
+            name: 'resetState',
+            inputSchema: z.any().describe("Any input is fine for reset"),
+            outputSchema: z.string().describe("Confirmation of reset"),
+        },
+        async (_input: any, state: any): Promise<string> => {
+            // Reset the state completely
+            if (state) {
+                Object.keys(state).forEach(key => {
+                    delete state[key];
+                });
+            }
+
+            // Initialize with default values
+            state.step = 'start';
+            state.history = [];
+            state.extractedParams = {};
+
+            console.log(`[resetStateFlow] State has been reset`);
+            return "State reset successful";
+        }
+    );
+}
